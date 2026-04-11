@@ -82,36 +82,27 @@ export async function executeViaSdk(
   privateKey: string
 ): Promise<TransactionResult> {
   try {
-    // Dynamic import to avoid loading WASM unless needed
-    const sdk = await import("@provablehq/sdk");
-    const { ProgramManager, AleoKeyProvider, AleoNetworkClient, NetworkRecordProvider, Account, initializeWasm } = sdk;
-
-    // initializeWasm is deprecated in latest SDK — no longer needed
-
-    const account = new Account({ privateKey });
-    // SDK appends /testnet internally, so pass base URL only
-    const networkClient = new AleoNetworkClient(ALEO_API_URL);
-    const keyProvider = new AleoKeyProvider();
-    keyProvider.useCache(true);
-    const recordProvider = new NetworkRecordProvider(account, networkClient);
-
-    const programManager = new ProgramManager(
-      ALEO_API_URL,
-      keyProvider,
-      recordProvider
-    );
-    programManager.setAccount(account);
-
-    const txId = await programManager.execute({
-      programName: request.programId,
-      functionName: request.functionName,
-      inputs: request.inputs,
-      priorityFee: request.fee ?? 100000,
-      privateFee: false,
+    // Use server-side API for proving — much faster than browser WASM
+    const res = await fetch("/api/aleo/execute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        programId: request.programId,
+        functionName: request.functionName,
+        inputs: request.inputs,
+        privateKey: privateKey,
+        fee: request.fee ?? 100000,
+      }),
     });
 
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error || `Server proving failed: ${res.status}`);
+    }
+
+    const result = await res.json();
     return {
-      transactionId: typeof txId === "string" ? txId : null,
+      transactionId: result.transactionId ?? null,
       status: "submitted",
       error: null,
     };
