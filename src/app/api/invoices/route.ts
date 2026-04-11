@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabase } from "@/lib/supabase/server";
+import { ensureProfile } from "@/lib/supabase/ensure-profile";
 
 export async function GET(request: NextRequest) {
   try {
@@ -58,13 +59,18 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: profile } = await supabase
+    let { data: profile } = await supabase
       .from("users")
       .select("company_id")
       .eq("id", user.id)
       .single();
     if (!profile) {
-      return NextResponse.json({ error: "Profile not found" }, { status: 404 });
+      // Auto-create profile if missing (safety net)
+      const companyId = await ensureProfile(user.id, user.email!);
+      if (!companyId) {
+        return NextResponse.json({ error: "Failed to create profile" }, { status: 500 });
+      }
+      profile = { company_id: companyId };
     }
 
     const body = await request.json();
