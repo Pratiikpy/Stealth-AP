@@ -1,0 +1,16 @@
+{
+  "program": "stealthap_batch.aleo",
+  "version": "0.1.0",
+  "description": "StealthAP Batch Settlement — Commit-reveal epoch-based batch payments. Prevents timing analysis by batching N payments into atomic settlement.",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ],
+  "dev_dependencies": null
+}

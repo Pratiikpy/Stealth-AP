@@ -1,0 +1,22 @@
+{
+  "program": "stealthap_audit.aleo",
+  "version": "0.2.0",
+  "description": "StealthAP Audit — ZK proof generation, selective disclosure, compliance. CPI to invoice for commitment verification.",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "stealthap_invoice.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ],
+  "dev_dependencies": null
+}

@@ -1,0 +1,22 @@
+{
+  "program": "stealthap_workflow.aleo",
+  "version": "0.2.0",
+  "description": "StealthAP Workflow — Approval thresholds, routing, delegation. CPI to invoice for status updates.",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "stealthap_invoice.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ],
+  "dev_dependencies": null
+}

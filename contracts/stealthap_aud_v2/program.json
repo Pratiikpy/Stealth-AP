@@ -1,0 +1,22 @@
+{
+  "program": "stealthap_aud_v2.aleo",
+  "version": "2.0.0",
+  "description": "StealthAP Audit v4 (Security Hardened) - CPI-verified audit proofs, admin-controlled authorization, honest self-attestation docs.",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "stealthap_inv_v2.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ],
+  "dev_dependencies": null
+}

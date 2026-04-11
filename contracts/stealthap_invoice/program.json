@@ -1,0 +1,16 @@
+{
+  "program": "stealthap_invoice.aleo",
+  "version": "0.1.0",
+  "description": "StealthAP Invoice Registry — Private invoice CRUD, vendor management, duplicate detection",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ],
+  "dev_dependencies": null
+}

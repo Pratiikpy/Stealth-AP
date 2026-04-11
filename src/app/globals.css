@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-surface-0: #E5E5E5;
+  --color-surface-1: #FFFFFF;
+  --color-surface-2: #F5F5F4;
+  --color-surface-3: #D4D4D4;
+
+  --color-text-1: #000000;
+  --color-text-2: #1a1a1a;
+  --color-text-3: #525252;
+  --color-text-4: #a3a3a3;
+
+  --color-border: #000000;
+  --color-border-hover: #000000;
+  --color-border-subtle: #d4d4d4;
+
+  --color-accent: #C6F15C;
+  --color-accent-muted: #C6F15C20;
+
+  --color-success: #C6F15C;
+  --color-warning: #FF90E8;
+  --color-danger: #EF4444;
+  --color-info: #B3A0FF;
+
+  --color-purple: #B3A0FF;
+  --color-pink: #FF90E8;
+  --color-lime: #C6F15C;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --text-stat: 28px;
+  --sidebar-width: 240px;
+  --sidebar-collapsed: 56px;
+  --topbar-height: 48px;
+
+  --font-mono: "Geist Mono", "SF Mono", monospace;
+  --font-sans: "Space Grotesk", "Geist", system-ui, sans-serif;
+  --font-serif: var(--font-dm-serif);
+}
+
+body {
+  background: #E5E5E5;
+  color: #000000;
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.005em;
+}
+
+::selection {
+  background-color: #C6F15C;
+  color: #000000;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #E5E5E5; }
+::-webkit-scrollbar-thumb { background: #d4d4d4; border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: #a3a3a3; }
+
+*:focus-visible {
+  outline: 2px solid #000000;
+  outline-offset: 2px;
+}
+
+button, a, [role="button"], input, select, textarea {
+  transition: transform 100ms ease, box-shadow 100ms ease, background-color 100ms ease;
+}
+
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Neo-brutalist retro shadows */
+.retro-shadow {
+  box-shadow: 4px 4px 0px 0px rgba(0,0,0,1);
+}
+.retro-shadow-hover:hover {
+  box-shadow: 6px 6px 0px 0px rgba(0,0,0,1);
+  transform: translate(-2px, -2px);
+}
+.retro-shadow-active:active {
+  box-shadow: 0px 0px 0px 0px rgba(0,0,0,1);
+  transform: translate(4px, 4px);
+}
+
+/* Dot pattern background */
+.dot-pattern {
+  background-image: radial-gradient(#000 1px, transparent 1px);
+  background-size: 24px 24px;
+  opacity: 0.1;
+}
+
+/* Skeleton loading (light theme) */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+.skeleton {
+  background: #d4d4d4;
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}

@@ -1,0 +1,33 @@
+{
+  "program": "stealthap_pay_v2.aleo",
+  "version": "2.0.0",
+  "description": "StealthAP Payments v2 — amount verification, updated CPI to inv_v2",
+  "license": "MIT",
+  "leo": "4.0.0",
+  "dependencies": [
+    {
+      "name": "credits.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "test_usdcx_stablecoin.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "test_usad_stablecoin.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    },
+    {
+      "name": "stealthap_inv_v2.aleo",
+      "location": "network",
+      "path": null,
+      "edition": null
+    }
+  ]
+}
