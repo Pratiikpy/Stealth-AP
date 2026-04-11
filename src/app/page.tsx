@@ -70,9 +70,6 @@ export default function HomePage() {
               Sign in
             </Link>
           </div>
-          <p className="font-mono text-[11px] text-text-3 mt-6 uppercase tracking-wider font-bold">
-            $1.2M settled &nbsp;/&nbsp; 100% private &nbsp;/&nbsp; ~1m 45s avg settlement
-          </p>
         </section>
 
         {/* How It Works */}
