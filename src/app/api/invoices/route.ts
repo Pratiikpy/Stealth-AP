@@ -41,7 +41,24 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ data, count });
+    // Transform DB rows to match frontend Invoice type (camelCase)
+    const transformed = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.invoice_number || row.id,
+      vendorId: row.vendor_id || "",
+      vendorName: (row.vendors as Record<string, string>)?.name || (row.extracted_data as Record<string, string>)?.vendor_name || "",
+      amount: (row.amount_micro as number) || 0,
+      token: row.token || "ALEO",
+      status: row.status || "draft",
+      dueDate: row.due_date || "",
+      createdAt: row.created_at || "",
+      description: (row.extracted_data as Record<string, string>)?.notes || "",
+      approvalChain: [],
+      txHash: row.aleo_tx_id || undefined,
+      // Keep raw fields for DB operations
+      _raw: row,
+    }));
+
+    return NextResponse.json({ data: transformed, count });
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to fetch invoices" },

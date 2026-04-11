@@ -30,7 +30,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ data });
+    const transformed = (data || []).map((row: Record<string, unknown>) => {
+      const invoice = row.invoices as Record<string, unknown> | null;
+      const vendor = invoice?.vendors as Record<string, string> | null;
+      return {
+        id: row.id,
+        invoiceId: row.invoice_id || "",
+        vendorName: vendor?.name || "",
+        amount: (invoice?.total_amount_micro as number) || 0,
+        token: "ALEO",
+        status: row.status || "pending",
+        requestedBy: row.approver_id || "",
+        requestedAt: row.created_at || "",
+        description: invoice?.gl_code || "",
+      };
+    });
+
+    return NextResponse.json({ data: transformed });
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch approvals" },

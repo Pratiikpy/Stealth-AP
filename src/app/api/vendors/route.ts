@@ -21,7 +21,18 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ data });
+    const transformed = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      name: row.name || "",
+      alias: (row.vendor_hash as string)?.slice(0, 12) || "",
+      address: row.payment_address || "",
+      category: row.category || "",
+      totalPaid: (row.total_paid_micro as number) || 0,
+      invoiceCount: (row.invoice_count as number) || 0,
+      lastPayment: row.created_at || "",
+    }));
+
+    return NextResponse.json({ data: transformed });
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch vendors" },

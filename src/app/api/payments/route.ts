@@ -21,7 +21,20 @@ export async function GET() {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ data });
+    const transformed = (data || []).map((row: Record<string, unknown>) => ({
+      id: row.id,
+      invoiceId: row.invoice_id || "",
+      vendorName: (row.vendors as Record<string, string>)?.name || "",
+      amount: (row.amount_micro as number) || 0,
+      token: row.token || "ALEO",
+      status: row.status || "pending",
+      initiatedAt: row.created_at || "",
+      settledAt: row.confirmed_at || undefined,
+      txHash: row.aleo_tx_id || undefined,
+      zkProof: row.aleo_payment_id || undefined,
+    }));
+
+    return NextResponse.json({ data: transformed });
   } catch {
     return NextResponse.json(
       { error: "Failed to fetch payments" },
