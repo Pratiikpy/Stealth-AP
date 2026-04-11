@@ -33,10 +33,10 @@ export function detectAvailableWallets(): WalletName[] {
 
   // Check for wallet extensions in window object
   const w = window as unknown as Record<string, unknown>;
+  if (w.shield) wallets.push("shield");
   if (w.leoWallet) wallets.push("leo");
   if (w.puzzle) wallets.push("puzzle");
   if (w.foxwallet) wallets.push("fox");
-  if (w.shieldWallet) wallets.push("shield");
 
   return wallets;
 }

@@ -44,7 +44,7 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
   const w = window as unknown as Record<string, unknown>;
 
   // Try each wallet adapter
-  const walletAPIs = [w.shieldWallet, w.leoWallet, w.puzzle, w.foxwallet].filter(Boolean);
+  const walletAPIs = [w.shield, w.leoWallet, w.puzzle, w.foxwallet].filter(Boolean);
 
   if (walletAPIs.length === 0) {
     return [];

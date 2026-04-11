@@ -36,7 +36,7 @@ export function ConnectButton() {
       const w = window as unknown as Record<string, unknown>;
       let walletAPI: Record<string, Function> | null = null;
 
-      if (wallet === "shield" && w.shieldWallet) walletAPI = w.shieldWallet as Record<string, Function>;
+      if (wallet === "shield" && w.shield) walletAPI = w.shield as Record<string, Function>;
       else if (wallet === "leo" && w.leoWallet) walletAPI = w.leoWallet as Record<string, Function>;
       else if (wallet === "puzzle" && w.puzzle) walletAPI = w.puzzle as Record<string, Function>;
       else if (wallet === "fox" && w.foxwallet) walletAPI = w.foxwallet as Record<string, Function>;
@@ -68,7 +68,7 @@ export function ConnectButton() {
   async function handleDisconnect() {
     try {
       const w = window as unknown as Record<string, unknown>;
-      const walletAPIs = [w.shieldWallet, w.leoWallet, w.puzzle, w.foxwallet].filter(Boolean);
+      const walletAPIs = [w.shield, w.leoWallet, w.puzzle, w.foxwallet].filter(Boolean);
       if (walletAPIs[0]) {
         await (walletAPIs[0] as Record<string, Function>).disconnect?.();
       }

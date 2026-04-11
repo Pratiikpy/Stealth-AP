@@ -43,7 +43,7 @@ export async function executeViaWallet(
 
   // Try each wallet in order of preference
   const walletAPIs = [
-    w.shieldWallet,
+    w.shield,
     w.leoWallet,
     w.puzzle,
     w.foxwallet,
