@@ -1,22 +1,14 @@
 /**
  * StealthAP Transaction Proving
  *
- * Two strategies:
- * 1. WALLET-BASED (primary) — The connected wallet handles proving.
- *    No registration needed. Works with Shield, Leo, Puzzle, Fox.
- *    The wallet decides whether to prove locally or via its own backend.
- *
- * 2. DELEGATED (optional) — Provable DPS generates proof in TEE.
- *    Requires API key. Faster but needs registration.
- *    Use when wallet proving is too slow or for backend operations.
+ * Three strategies:
+ * 1. WALLET-BASED (primary) — Browser extension handles proving.
+ * 2. SDK-BASED (burner) — @provablehq/sdk proves with private key in browser.
+ * 3. DELEGATED (optional) — Provable DPS generates proof server-side.
  */
 
-import { getTransaction } from "./client";
-
-// ═══════════════════════════════════════════
-// STRATEGY 1: WALLET-BASED PROVING (Primary)
-// No registration. No API key. Just works.
-// ═══════════════════════════════════════════
+import { getTransaction, ALEO_API_URL, NETWORK } from "./client";
+import { useWalletStore } from "@/stores/wallet-store";
 
 export interface TransactionRequest {
   programId: string;
@@ -31,17 +23,15 @@ export interface TransactionResult {
   error: string | null;
 }
 
-/**
- * Execute a transaction via the connected wallet.
- * The wallet handles proving internally.
- */
+// ═══════════════════════════════════════════
+// STRATEGY 1: WALLET-BASED PROVING (Primary)
+// ═══════════════════════════════════════════
+
 export async function executeViaWallet(
   request: TransactionRequest
 ): Promise<TransactionResult> {
-  // The wallet adapter injects into window
   const w = window as unknown as Record<string, unknown>;
 
-  // Try each wallet in order of preference
   const walletAPIs = [
     w.shield,
     w.leoWallet,
@@ -53,20 +43,19 @@ export async function executeViaWallet(
     return {
       transactionId: null,
       status: "failed",
-      error: "No wallet connected. Please connect Shield, Leo, Puzzle, or Fox wallet.",
+      error: "No wallet extension detected.",
     };
   }
 
   const wallet = walletAPIs[0] as Record<string, unknown>;
 
   try {
-    // Standard Aleo wallet adapter interface
     const result = await (wallet.requestTransaction as Function)({
       type: "execute",
       programId: request.programId,
       functionName: request.functionName,
       inputs: request.inputs,
-      fee: request.fee ?? 10000, // 0.01 ALEO default fee
+      fee: request.fee ?? 10000,
     });
 
     return {
@@ -84,8 +73,58 @@ export async function executeViaWallet(
 }
 
 // ═══════════════════════════════════════════
-// STRATEGY 2: DELEGATED PROVING (Optional)
-// Requires Provable API key. Faster proving.
+// STRATEGY 2: SDK-BASED PROVING (Burner Key)
+// Uses @provablehq/sdk with private key
+// ═══════════════════════════════════════════
+
+export async function executeViaSdk(
+  request: TransactionRequest,
+  privateKey: string
+): Promise<TransactionResult> {
+  try {
+    // Dynamic import to avoid loading WASM unless needed
+    const sdk = await import("@provablehq/sdk");
+    const { ProgramManager, AleoKeyProvider, AleoNetworkClient, NetworkRecordProvider, Account, initializeWasm } = sdk;
+
+    await initializeWasm();
+
+    const account = new Account({ privateKey });
+    const networkClient = new AleoNetworkClient(`${ALEO_API_URL}/${NETWORK}`);
+    const keyProvider = new AleoKeyProvider();
+    keyProvider.useCache(true);
+    const recordProvider = new NetworkRecordProvider(account, networkClient);
+
+    const programManager = new ProgramManager(
+      `${ALEO_API_URL}/${NETWORK}`,
+      keyProvider,
+      recordProvider
+    );
+    programManager.setAccount(account);
+
+    const txId = await programManager.execute({
+      programName: request.programId,
+      functionName: request.functionName,
+      inputs: request.inputs,
+      priorityFee: request.fee ?? 100000,
+      privateFee: false,
+    });
+
+    return {
+      transactionId: typeof txId === "string" ? txId : null,
+      status: "submitted",
+      error: null,
+    };
+  } catch (err) {
+    return {
+      transactionId: null,
+      status: "failed",
+      error: err instanceof Error ? err.message : "SDK proving failed",
+    };
+  }
+}
+
+// ═══════════════════════════════════════════
+// STRATEGY 3: DELEGATED PROVING (Optional)
 // ═══════════════════════════════════════════
 
 const DPS_URL =
@@ -95,17 +134,10 @@ const DPS_URL =
 const PROVABLE_API_KEY = process.env.PROVABLE_API_KEY || "";
 const PROVABLE_CONSUMER_ID = process.env.PROVABLE_CONSUMER_ID || "";
 
-/**
- * Check if DPS is configured
- */
 export function isDPSAvailable(): boolean {
   return !!PROVABLE_API_KEY && !PROVABLE_API_KEY.includes("placeholder");
 }
 
-/**
- * Execute via Provable Delegated Proving Service.
- * Only use if DPS is configured (isDPSAvailable() returns true).
- */
 export async function executeViaDPS(
   request: TransactionRequest
 ): Promise<TransactionResult> {
@@ -113,19 +145,11 @@ export async function executeViaDPS(
     return {
       transactionId: null,
       status: "failed",
-      error: "DPS not configured. Using wallet-based proving instead.",
+      error: "DPS not configured.",
     };
   }
 
   try {
-    const payload = {
-      program: request.programId,
-      function: request.functionName,
-      inputs: request.inputs,
-      fee: request.fee ?? 10000,
-      broadcast: true,
-    };
-
     const res = await fetch(`${DPS_URL}/prove`, {
       method: "POST",
       headers: {
@@ -133,7 +157,13 @@ export async function executeViaDPS(
         Authorization: `Bearer ${PROVABLE_API_KEY}`,
         "X-Consumer-Id": PROVABLE_CONSUMER_ID,
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        program: request.programId,
+        function: request.functionName,
+        inputs: request.inputs,
+        fee: request.fee ?? 10000,
+        broadcast: true,
+      }),
     });
 
     if (!res.ok) {
@@ -162,26 +192,42 @@ export async function executeViaDPS(
 
 /**
  * Execute a transaction using the best available strategy:
- * 1. If DPS is configured → use DPS (faster)
- * 2. Otherwise → use connected wallet (no setup needed)
+ * 1. Burner wallet (private key in store) → SDK proving
+ * 2. Browser wallet extension → wallet proving
+ * 3. DPS configured → delegated proving
  */
 export async function executeTransaction(
   request: TransactionRequest
 ): Promise<TransactionResult> {
+  // Check if burner wallet with private key
+  const { privateKey } = useWalletStore.getState();
+  if (privateKey) {
+    return executeViaSdk(request, privateKey);
+  }
+
+  // Check for browser wallet extension
+  const w = typeof window !== "undefined" ? window as unknown as Record<string, unknown> : {};
+  const hasExtension = w.shield || w.leoWallet || w.puzzle || w.foxwallet;
+  if (hasExtension) {
+    return executeViaWallet(request);
+  }
+
+  // Fall back to DPS
   if (isDPSAvailable()) {
     return executeViaDPS(request);
   }
-  return executeViaWallet(request);
+
+  return {
+    transactionId: null,
+    status: "failed",
+    error: "No wallet connected. Connect Shield Wallet, paste a private key, or configure DPS.",
+  };
 }
 
 // ═══════════════════════════════════════════
 // CONFIRMATION POLLING
 // ═══════════════════════════════════════════
 
-/**
- * Poll for transaction confirmation on-chain.
- * Returns true when confirmed, false on timeout.
- */
 export async function waitForConfirmation(
   txId: string,
   maxAttempts = 30,
