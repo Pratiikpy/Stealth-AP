@@ -57,7 +57,7 @@ async function extractViaNvidia(
   mimeType: string
 ): Promise<InvoiceExtraction> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
     const response = await fetch(`${NVIDIA_NIM_URL}/chat/completions`, {
@@ -165,7 +165,8 @@ export async function extractInvoiceFromPdf(
     try {
       return await extractViaNvidia(fileBase64, mimeType);
     } catch (nvidiaError) {
-      // NVIDIA failed — silently fall through to Gemini
+      // NVIDIA failed — fall through to Gemini
+      console.log("[StealthAP] NVIDIA failed:", nvidiaError instanceof Error ? nvidiaError.message : nvidiaError);
     }
   }
 
