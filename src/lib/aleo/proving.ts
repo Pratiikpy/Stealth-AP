@@ -50,13 +50,23 @@ export async function executeViaWallet(
   const wallet = walletAPIs[0] as Record<string, unknown>;
 
   try {
-    const result = await (wallet.requestTransaction as Function)({
+    // Shield uses executeTransaction, Leo/Puzzle/Fox use requestTransaction
+    const execFn = (wallet.executeTransaction || wallet.requestTransaction) as Function;
+    if (!execFn) {
+      return { transactionId: null, status: "failed", error: "Wallet does not support transaction execution" };
+    }
+
+    const txPayload = {
       type: "execute",
       programId: request.programId,
+      programName: request.programId, // Shield uses programName
       functionName: request.functionName,
       inputs: request.inputs,
       fee: request.fee ?? 10000,
-    });
+      privateFee: false,
+    };
+
+    const result = await execFn.call(wallet, txPayload);
 
     return {
       transactionId: (result as { transactionId?: string })?.transactionId ?? null,
