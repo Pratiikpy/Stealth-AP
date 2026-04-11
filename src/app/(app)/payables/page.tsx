@@ -212,8 +212,8 @@ export default function PayablesPage() {
       refreshInvoices();
       setShowCreate(false);
       setExtractedData(null);
-    } catch {
-      // Save error handled silently; panel stays open so user can retry
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save invoice");
     } finally {
       setSaving(false);
     }

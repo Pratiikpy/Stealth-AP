@@ -97,13 +97,15 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
+      console.log("[StealthAP] Invoice insert error:", error.message, error.details, error.hint);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
     return NextResponse.json({ data }, { status: 201 });
   } catch (err) {
+    console.log("[StealthAP] Invoice POST catch:", err instanceof Error ? err.message : err);
     return NextResponse.json(
-      { error: "Failed to create invoice" },
+      { error: err instanceof Error ? err.message : "Failed to create invoice" },
       { status: 500 }
     );
   }
