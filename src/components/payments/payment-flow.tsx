@@ -13,6 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { PrivacyIndicator } from "@/components/ui/privacy-indicator";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import { formatMicro } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
@@ -110,8 +111,10 @@ export function PaymentFlow({
           useWalletStore.getState().setBalance({ aleo: Number(aleo) });
         }).catch(() => {});
       } else {
-        // Demo mode — simulate timing
-        await new Promise((resolve) => setTimeout(resolve, 2000));
+        // No wallet connected or no sufficient record — cannot proceed
+        toast.error("Connect wallet and ensure sufficient balance to pay.");
+        setStep("review");
+        return;
       }
 
       setProofChecklist((prev) => [...prev, "Broadcasting to Aleo"]);
@@ -124,18 +127,12 @@ export function PaymentFlow({
       onSuccess?.(invoices, aleoTx.txId ?? undefined);
 
       setStep("success");
-    } catch {
-      // Fallback to demo animation on error
-      setProofChecklist((prev) => [...prev, "Broadcasting to Aleo"]);
-      setProgress(100);
-
-      const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
-      setSettlementTime(`${elapsed}s`);
-
-      // Still save to DB in demo mode (no tx id)
-      onSuccess?.(invoices);
-
-      setStep("success");
+    } catch (err) {
+      // On-chain failed — show error, go back to review, do NOT save to DB
+      toast.error(err instanceof Error ? err.message : "Payment failed. Please try again.");
+      setStep("review");
+      setProgress(0);
+      setProofChecklist([]);
     }
   }
 

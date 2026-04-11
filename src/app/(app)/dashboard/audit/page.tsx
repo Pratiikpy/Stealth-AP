@@ -63,68 +63,62 @@ export default function AuditPage() {
   }
 
   async function handleGenerate() {
+    // Step 1: Require wallet connection
+    if (!connected || !address) {
+      toast.error("Connect your wallet first to generate audit proofs.");
+      return;
+    }
+
     setGenerating(true);
-    let aleoTxId: string | null = null;
+    try {
+      // Step 2: On-chain FIRST
+      const nonce = generateNonce();
+      const dateStartTs = Math.floor(new Date(dateStart).getTime() / 1000);
+      const dateEndTs = Math.floor(new Date(dateEnd).getTime() / 1000);
 
-    if (connected) {
-      try {
-        const nonce = generateNonce();
-        const dateStartTs = Math.floor(new Date(dateStart).getTime() / 1000);
-        const dateEndTs = Math.floor(new Date(dateEnd).getTime() / 1000);
+      const companyHash = await hashToField(address);
 
-        // Use a consistent company hash derived from wallet address
-        const companyHash = await hashToField(address ?? "stealthap-company");
+      const result = await generateAuditProof({
+        companyHash,
+        dateStart: dateStartTs,
+        dateEnd: dateEndTs,
+        totalAmount: BigInt(realTotal),
+        invoiceCount: BigInt(realCount),
+        nonce,
+      });
 
-        const result = await generateAuditProof({
-          companyHash,
-          dateStart: dateStartTs,
-          dateEnd: dateEndTs,
-          totalAmount: BigInt(realTotal),
-          invoiceCount: BigInt(realCount),
-          nonce,
-        });
-
-        if (result.status === "failed") {
-          toastError("ZK proof generation failed", result.error ?? "Unknown error");
-          setGenerating(false);
-          return;
-        }
-
-        aleoTxId = result.transactionId;
-        toastSuccess("ZK proof generated on-chain", aleoTxId ? `TX: ${aleoTxId.slice(0, 16)}...` : undefined);
-      } catch (err) {
-        toastError("Aleo transaction failed", err instanceof Error ? err.message : "Please try again.");
-        setGenerating(false);
+      if (result.status === "failed") {
+        toastError("ZK proof generation failed", result.error ?? "Unknown error");
         return;
       }
-    }
 
-    try {
-      const res = await fetch("/api/audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          proof_type: "selective_disclosure",
-          date_range_start: dateStart,
-          date_range_end: dateEnd,
-          disclosure_fields: selected,
-          aleo_tx_id: aleoTxId,
-        }),
-      });
-      if (res.ok) {
-        refreshProofs();
+      const aleoTxId = result.transactionId;
+      toastSuccess("ZK proof generated on-chain", aleoTxId ? `TX: ${aleoTxId.slice(0, 16)}...` : undefined);
+
+      // Step 3: On-chain succeeded — NOW save to DB
+      try {
+        const res = await fetch("/api/audit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            proof_type: "selective_disclosure",
+            date_range_start: dateStart,
+            date_range_end: dateEnd,
+            disclosure_fields: selected,
+            aleo_tx_id: aleoTxId,
+          }),
+        });
+        if (res.ok) {
+          refreshProofs();
+        }
+      } catch {
+        // API unavailable — on-chain proof exists, DB save failed silently
       }
-    } catch {
-      // API unavailable, silently fail
+    } catch (err) {
+      toastError("Aleo transaction failed", err instanceof Error ? err.message : "Please try again.");
+    } finally {
+      setGenerating(false);
     }
-
-    if (!connected) {
-      toast("Saved without on-chain proof", {
-        description: "Connect your wallet for ZK verification on Aleo.",
-      });
-    }
-
-    setGenerating(false);
   }
 
   function proofLabel(p: AuditProof): string {

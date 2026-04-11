@@ -4,7 +4,7 @@ import { useState, useMemo, useCallback } from "react";
 import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatDate } from "@/lib/utils";
-import { toastSuccess, toastInvoiceCreated } from "@/lib/utils";
+import { toastSuccess } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataTable } from "@/components/ui/data-table";
 import type { Column } from "@/components/ui/data-table";
@@ -97,8 +97,16 @@ function SubmitButton({ invoice, onSubmitted }: { invoice: Invoice; onSubmitted:
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit() {
+    // Require wallet connection
+    const { connected } = useWalletStore.getState();
+    if (!connected) {
+      toast.error("Connect your wallet first to submit invoices.");
+      return;
+    }
+
     setLoading(true);
     try {
+      // On-chain submit requires InvoiceRecord from wallet — not available without record scanning. DB-only for now.
       const rawId = (invoice as unknown as { _raw?: { id: string } })._raw?.id;
       if (!rawId) return;
       const res = await fetch("/api/invoices", {
@@ -208,10 +216,50 @@ export default function PayablesPage() {
 
   const handleSave = useCallback(async () => {
     if (!extractedData) return;
+
+    // Step 1: Require wallet connection
+    const { connected, address } = useWalletStore.getState();
+    if (!connected || !address) {
+      toast.error("Connect your wallet first to save invoices.");
+      return;
+    }
+
     setSaving(true);
     try {
       const amountMicro = Math.round((extractedData.amount ?? 0) * 1_000_000);
       const taxMicro = Math.round((extractedData.tax_amount ?? 0) * 1_000_000);
+
+      // Step 2: On-chain FIRST — wallet must sign before DB save
+      const nonce = generateNonce();
+      const companyHash = await hashToField(address);
+      const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
+      const dueDateTs = extractedData.due_date
+        ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
+        : nowTimestamp();
+
+      const txResult = await createInvoiceOnChain({
+        companyHash,
+        vendorHash,
+        vendorAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc",
+        amount: BigInt(amountMicro),
+        taxAmount: BigInt(taxMicro),
+        currencyFlag: 0,
+        dueDate: dueDateTs,
+        createdAt: nowTimestamp(),
+        glCodeHash: "0",
+        poHash: "0",
+        itemsHash: "0",
+        memoHash: "0",
+        nonce,
+        categoryHash: "0",
+      });
+
+      if (txResult.status === "failed") {
+        toast.error(txResult.error || "On-chain invoice creation failed");
+        return;
+      }
+
+      // Step 3: On-chain succeeded — NOW save to DB with TX ID
       const res = await fetch("/api/invoices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -230,6 +278,7 @@ export default function PayablesPage() {
             ? Object.values(extractedData.confidence).reduce((a, b) => a + b, 0) /
               Object.values(extractedData.confidence).length
             : null,
+          aleo_tx_id: txResult.transactionId ?? null,
         }),
       });
       if (!res.ok) {
@@ -237,66 +286,10 @@ export default function PayablesPage() {
         throw new Error(err.error || "Failed to save invoice");
       }
 
-      const savedInvoice = await res.json();
-
-      // Wire on-chain: commit invoice hash to Aleo after DB save
-      // Only attempt if wallet extension connected (not burner SDK — too slow for proving)
-      const { connected, address, privateKey } = useWalletStore.getState();
-      const hasExtension = typeof window !== "undefined" && (
-        (window as unknown as Record<string, unknown>).shield ||
-        (window as unknown as Record<string, unknown>).leoWallet ||
-        (window as unknown as Record<string, unknown>).puzzle ||
-        (window as unknown as Record<string, unknown>).foxwallet
+      toastSuccess(
+        "Invoice committed on-chain",
+        txResult.transactionId ? `TX: ${txResult.transactionId.slice(0, 16)}...` : undefined
       );
-      if (connected && address && (hasExtension || !privateKey)) {
-        try {
-          const nonce = generateNonce();
-          const companyHash = await hashToField(address);
-          const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
-          const dueDateTs = extractedData.due_date
-            ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
-            : nowTimestamp();
-
-          const txResult = await createInvoiceOnChain({
-            companyHash,
-            vendorHash,
-            vendorAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc",
-            amount: BigInt(amountMicro),
-            taxAmount: BigInt(taxMicro),
-            currencyFlag: 0,
-            dueDate: dueDateTs,
-            createdAt: nowTimestamp(),
-            glCodeHash: "0",
-            poHash: "0",
-            itemsHash: "0",
-            memoHash: "0",
-            nonce,
-            categoryHash: "0",
-          });
-
-          if (txResult.transactionId) {
-            await fetch("/api/invoices", {
-              method: "PATCH",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                id: savedInvoice.data?.id ?? savedInvoice.id,
-                aleo_tx_id: txResult.transactionId,
-              }),
-            });
-            toastSuccess("Invoice committed on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
-          } else {
-            toastInvoiceCreated(extractedData.invoice_number ?? "New");
-          }
-        } catch {
-          toast("Invoice saved. On-chain commitment pending.", {
-            description: "Connect wallet to finalize privacy commitment.",
-          });
-        }
-      } else {
-        toast("Invoice saved to database", {
-          description: "Connect wallet for on-chain privacy.",
-        });
-      }
 
       refreshInvoices();
       setShowCreate(false);

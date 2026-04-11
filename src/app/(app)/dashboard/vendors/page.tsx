@@ -13,7 +13,11 @@ import { SlidePanel } from "@/components/ui/slide-panel";
 import { DataTable } from "@/components/ui/data-table";
 import type { Column } from "@/components/ui/data-table";
 import type { Vendor } from "@/lib/types";
-import { shortHash } from "@/lib/utils";
+import { shortHash, toastSuccess } from "@/lib/utils";
+import { toast } from "sonner";
+import { registerVendorOnChain } from "@/lib/aleo/programs/invoice";
+import { useWalletStore } from "@/stores/wallet-store";
+import { hashToField, generateNonce } from "@/lib/crypto";
 
 const columns: Column<Vendor>[] = [
   {
@@ -99,8 +103,40 @@ export default function VendorsPage() {
 
   const handleSaveVendor = useCallback(async () => {
     if (!form.name.trim()) return;
+
+    // Step 1: Require wallet connection
+    const { connected, address } = useWalletStore.getState();
+    if (!connected || !address) {
+      toast.error("Connect your wallet first to register vendors.");
+      return;
+    }
+
     setSaving(true);
     try {
+      // Step 2: On-chain FIRST — register vendor before DB save
+      const nonce = generateNonce();
+      const companyHash = await hashToField(address);
+      const nameHash = await hashToField(form.name);
+      const categoryHash = await hashToField(form.category);
+      const paymentAddress = form.payment_address?.startsWith("aleo1")
+        ? form.payment_address
+        : "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
+
+      const txResult = await registerVendorOnChain({
+        companyHash,
+        nameHash,
+        paymentAddress,
+        defaultToken: 0,
+        categoryHash,
+        nonce,
+      });
+
+      if (txResult.status === "failed") {
+        toast.error(txResult.error || "On-chain vendor registration failed");
+        return;
+      }
+
+      // Step 3: On-chain succeeded — NOW save to DB
       const res = await fetch("/api/vendors", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -110,17 +146,23 @@ export default function VendorsPage() {
           category: form.category,
           contact_email: form.contact_email,
           payment_terms: form.payment_terms,
+          aleo_tx_id: txResult.transactionId ?? null,
         }),
       });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.error || "Failed to save vendor");
       }
+
+      toastSuccess(
+        "Vendor registered on-chain",
+        txResult.transactionId ? `TX: ${txResult.transactionId.slice(0, 16)}...` : undefined
+      );
       refreshVendors();
       setShowAdd(false);
       setForm(emptyForm);
-    } catch {
-      // Panel stays open on error so user can retry
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save vendor");
     } finally {
       setSaving(false);
     }

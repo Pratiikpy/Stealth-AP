@@ -52,36 +52,32 @@ export default function ApprovalsPage() {
       setActioning(approvalId);
       try {
         // Step 1: On-chain FIRST — wallet must sign before DB update
-        const w = window as unknown as Record<string, unknown>;
-        const hasExtension = w.shield || w.leoWallet || w.puzzle || w.foxwallet;
+        // executeTransaction handles routing (extension -> SDK -> DPS -> error)
+        const approval = approvals.find((a) => a.id === approvalId);
+        const invoiceId = approval?.invoiceId ?? approvalId;
 
-        if (hasExtension) {
-          const approval = approvals.find((a) => a.id === approvalId);
-          const invoiceId = approval?.invoiceId ?? approvalId;
-
-          if (action === "approve") {
-            const nonce = generateNonce();
-            const txResult = await approvePrivate(invoiceId, nonce);
-            if (txResult.status === "failed") {
-              toast.error(txResult.error || "On-chain approval failed");
-              setActioning(null);
-              return;
-            }
-            if (txResult.transactionId) {
-              toastSuccess("Signed on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
-            }
-          } else {
-            const nonce = generateNonce();
-            const txResult = await rejectInvoiceOnChain(invoiceId, nonce, nowTimestamp());
-            if (txResult.status === "failed") {
-              toast.error(txResult.error || "On-chain rejection failed");
-              setActioning(null);
-              return;
-            }
+        if (action === "approve") {
+          const nonce = generateNonce();
+          const txResult = await approvePrivate(invoiceId, nonce);
+          if (txResult.status === "failed") {
+            toast.error(txResult.error || "On-chain approval failed");
+            setActioning(null);
+            return;
+          }
+          if (txResult.transactionId) {
+            toastSuccess("Signed on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
+          }
+        } else {
+          const nonce = generateNonce();
+          const txResult = await rejectInvoiceOnChain(invoiceId, nonce, nowTimestamp());
+          if (txResult.status === "failed") {
+            toast.error(txResult.error || "On-chain rejection failed");
+            setActioning(null);
+            return;
           }
         }
 
-        // Step 2: Update DB after on-chain succeeds (or if no extension)
+        // Step 2: Update DB after on-chain succeeds
         const res = await fetch("/api/approvals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
