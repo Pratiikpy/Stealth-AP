@@ -240,8 +240,15 @@ export default function PayablesPage() {
       const savedInvoice = await res.json();
 
       // Wire on-chain: commit invoice hash to Aleo after DB save
-      const { connected, address } = useWalletStore.getState();
-      if (connected && address) {
+      // Only attempt if wallet extension connected (not burner SDK — too slow for proving)
+      const { connected, address, privateKey } = useWalletStore.getState();
+      const hasExtension = typeof window !== "undefined" && (
+        (window as unknown as Record<string, unknown>).shield ||
+        (window as unknown as Record<string, unknown>).leoWallet ||
+        (window as unknown as Record<string, unknown>).puzzle ||
+        (window as unknown as Record<string, unknown>).foxwallet
+      );
+      if (connected && address && (hasExtension || !privateKey)) {
         try {
           const nonce = generateNonce();
           const companyHash = await hashToField(address);

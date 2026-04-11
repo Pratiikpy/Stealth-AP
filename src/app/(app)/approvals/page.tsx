@@ -43,48 +43,52 @@ export default function ApprovalsPage() {
     async (approvalId: string, action: "approve" | "reject") => {
       setActioning(approvalId);
       try {
+        // Step 1: Update DB
         const res = await fetch("/api/approvals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ id: approvalId, action }),
         });
-        if (res.ok) {
-          refreshApprovals();
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error || "Action failed");
+        }
 
-          // Wire on-chain: record approval/rejection on Aleo
-          const { connected } = useWalletStore.getState();
-          if (connected) {
-            try {
-              const approval = approvals.find((a) => a.id === approvalId);
-              const invoiceId = approval?.invoiceId ?? approvalId;
+        refreshApprovals();
+        toastSuccess(action === "approve" ? "Invoice approved" : "Invoice rejected");
 
-              if (action === "approve") {
-                const nonce = generateNonce();
-                const txResult = await approvePrivate(invoiceId, nonce);
-                if (txResult.transactionId) {
-                  toastSuccess("Approval recorded on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
-                }
-              } else {
-                // For rejection, use a dummy approval record ciphertext and reason hash
-                const nonce = generateNonce();
-                const txResult = await rejectInvoiceOnChain(
-                  invoiceId, // approval record placeholder
-                  nonce, // reason hash
-                  nowTimestamp()
-                );
-                if (txResult.transactionId) {
-                  toastSuccess("Rejection recorded on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
-                }
+        // Step 2: Try on-chain (non-blocking — don't hold up the UI)
+        const { connected, privateKey } = useWalletStore.getState();
+        const hasExtension = typeof window !== "undefined" && (
+          (window as unknown as Record<string, unknown>).shield ||
+          (window as unknown as Record<string, unknown>).leoWallet
+        );
+
+        if (connected && (hasExtension || !privateKey)) {
+          // Only attempt on-chain if using wallet extension (not burner SDK — too slow)
+          try {
+            const approval = approvals.find((a) => a.id === approvalId);
+            const invoiceId = approval?.invoiceId ?? approvalId;
+
+            if (action === "approve") {
+              const nonce = generateNonce();
+              const txResult = await approvePrivate(invoiceId, nonce);
+              if (txResult.transactionId) {
+                toastSuccess("Approval recorded on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
               }
-            } catch {
-              toast("DB updated. On-chain recording pending.", {
-                description: "The approval was saved but on-chain commit will retry.",
-              });
+            } else {
+              const nonce = generateNonce();
+              const txResult = await rejectInvoiceOnChain(invoiceId, nonce, nowTimestamp());
+              if (txResult.transactionId) {
+                toastSuccess("Rejection recorded on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
+              }
             }
+          } catch {
+            // On-chain failed — DB already updated, non-blocking
           }
         }
-      } catch {
-        // fallback: optimistic update not applied
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Action failed");
       } finally {
         setActioning(null);
       }
