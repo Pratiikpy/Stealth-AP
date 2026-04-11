@@ -229,37 +229,7 @@ export default function PayablesPage() {
       const amountMicro = Math.round((extractedData.amount ?? 0) * 1_000_000);
       const taxMicro = Math.round((extractedData.tax_amount ?? 0) * 1_000_000);
 
-      // Step 2: On-chain FIRST — wallet must sign before DB save
-      const nonce = generateNonce();
-      const companyHash = await hashToField(address);
-      const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
-      const dueDateTs = extractedData.due_date
-        ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
-        : nowTimestamp();
-
-      const txResult = await createInvoiceOnChain({
-        companyHash,
-        vendorHash,
-        vendorAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc",
-        amount: BigInt(amountMicro),
-        taxAmount: BigInt(taxMicro),
-        currencyFlag: 0,
-        dueDate: dueDateTs,
-        createdAt: nowTimestamp(),
-        glCodeHash: "0",
-        poHash: "0",
-        itemsHash: "0",
-        memoHash: "0",
-        nonce,
-        categoryHash: "0",
-      });
-
-      if (txResult.status === "failed") {
-        toast.error(txResult.error || "On-chain invoice creation failed");
-        return;
-      }
-
-      // Step 3: On-chain succeeded — NOW save to DB with TX ID
+      // Step 2: Save to DB
       const res = await fetch("/api/invoices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -278,7 +248,6 @@ export default function PayablesPage() {
             ? Object.values(extractedData.confidence).reduce((a, b) => a + b, 0) /
               Object.values(extractedData.confidence).length
             : null,
-          aleo_tx_id: txResult.transactionId ?? null,
         }),
       });
       if (!res.ok) {
@@ -286,10 +255,49 @@ export default function PayablesPage() {
         throw new Error(err.error || "Failed to save invoice");
       }
 
-      toastSuccess(
-        "Invoice committed on-chain",
-        txResult.transactionId ? `TX: ${txResult.transactionId.slice(0, 16)}...` : undefined
-      );
+      const savedInvoice = await res.json();
+      toastSuccess("Invoice saved");
+
+      // Step 3: Try on-chain commitment (non-blocking)
+      try {
+        const nonce = generateNonce();
+        const companyHash = await hashToField(address);
+        const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
+        const dueDateTs = extractedData.due_date
+          ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
+          : nowTimestamp();
+
+        const txResult = await createInvoiceOnChain({
+          companyHash,
+          vendorHash,
+          vendorAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc",
+          amount: BigInt(amountMicro),
+          taxAmount: BigInt(taxMicro),
+          currencyFlag: 0,
+          dueDate: dueDateTs,
+          createdAt: nowTimestamp(),
+          glCodeHash: "0",
+          poHash: "0",
+          itemsHash: "0",
+          memoHash: "0",
+          nonce,
+          categoryHash: "0",
+        });
+
+        if (txResult.transactionId) {
+          await fetch("/api/invoices", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: savedInvoice.data?.id ?? savedInvoice.id,
+              aleo_tx_id: txResult.transactionId,
+            }),
+          });
+          toastSuccess("On-chain commitment", `TX: ${txResult.transactionId.slice(0, 16)}...`);
+        }
+      } catch {
+        // On-chain failed — invoice is saved in DB, commitment pending
+      }
 
       refreshInvoices();
       setShowCreate(false);
