@@ -29,23 +29,33 @@ export async function GET(request: NextRequest) {
     const { error } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!error) {
-      // Check if user profile exists, create if not
       const {
         data: { user },
       } = await supabase.auth.getUser();
 
       if (user) {
-        const { data: existingUser } = await supabase
+        // Use service role client to bypass RLS for profile creation
+        const adminClient = createServerClient(
+          process.env.NEXT_PUBLIC_SUPABASE_URL!,
+          process.env.SUPABASE_SERVICE_ROLE_KEY!,
+          {
+            cookies: {
+              getAll() { return cookieStore.getAll(); },
+              setAll() {},
+            },
+          }
+        );
+
+        const { data: existingUser } = await adminClient
           .from("users")
           .select("id")
           .eq("id", user.id)
           .single();
 
         if (!existingUser) {
-          // First-time signup — create company and user profile
           const metadata = user.user_metadata ?? {};
 
-          const { data: company } = await supabase
+          const { data: company } = await adminClient
             .from("companies")
             .insert({
               name: metadata.company_name || "My Company",
@@ -54,7 +64,7 @@ export async function GET(request: NextRequest) {
             .single();
 
           if (company) {
-            await supabase.from("users").insert({
+            await adminClient.from("users").insert({
               id: user.id,
               email: user.email!,
               first_name: metadata.first_name || null,
@@ -70,6 +80,5 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Auth error — redirect to login
   return NextResponse.redirect(`${origin}/login?error=auth_failed`);
 }
