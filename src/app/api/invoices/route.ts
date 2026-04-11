@@ -108,3 +108,43 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createServerSupabase();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json();
+    if (!body.id) {
+      return NextResponse.json({ error: "Missing invoice id" }, { status: 400 });
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (body.aleo_tx_id) updates.aleo_tx_id = body.aleo_tx_id;
+    if (body.aleo_invoice_id) updates.aleo_invoice_id = body.aleo_invoice_id;
+    if (body.status) updates.status = body.status;
+    if (body.invoice_hash) updates.invoice_hash = body.invoice_hash;
+
+    const { data, error } = await supabase
+      .from("invoices")
+      .update(updates)
+      .eq("id", body.id)
+      .select()
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ data });
+  } catch (err) {
+    return NextResponse.json(
+      { error: "Failed to update invoice" },
+      { status: 500 }
+    );
+  }
+}

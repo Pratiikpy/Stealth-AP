@@ -158,11 +158,11 @@ export default function PayablesPage() {
       const savedInvoice = await res.json();
 
       // Wire on-chain: commit invoice hash to Aleo after DB save
-      const { connected } = useWalletStore.getState();
-      if (connected) {
+      const { connected, address } = useWalletStore.getState();
+      if (connected && address) {
         try {
           const nonce = generateNonce();
-          const companyHash = await hashToField("stealthap-company-" + nonce.slice(0, 8));
+          const companyHash = await hashToField(address);
           const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
           const dueDateTs = extractedData.due_date
             ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
