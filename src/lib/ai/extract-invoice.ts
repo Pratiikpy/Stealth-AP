@@ -60,6 +60,59 @@ async function extractViaNvidia(
   const timeout = setTimeout(() => controller.abort(), 60000);
 
   try {
+    // Step 1: Upload file to NVIDIA asset API to get a URL
+    const uploadRes = await fetch("https://api.nvcf.nvidia.com/v2/nvcf/assets", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${NVIDIA_NIM_KEY}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        contentType: mimeType,
+        description: "invoice-upload",
+      }),
+      signal: controller.signal,
+    });
+
+    let imageContent: { type: string; image_url?: { url: string }; text?: string };
+
+    if (uploadRes.ok) {
+      const uploadData = await uploadRes.json();
+      const uploadUrl = uploadData.uploadUrl;
+      const assetId = uploadData.assetId;
+
+      // Upload the actual file
+      await fetch(uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": mimeType,
+          "x-amz-meta-nvcf-asset-description": "invoice-upload",
+        },
+        body: Buffer.from(fileBase64, "base64"),
+        signal: controller.signal,
+      });
+
+      imageContent = {
+        type: "image_url",
+        image_url: {
+          url: `data:${mimeType};asset_id,${assetId}`,
+        },
+      };
+    } else {
+      // Fallback: try inline base64 for image types only
+      if (mimeType.startsWith("image/")) {
+        imageContent = {
+          type: "image_url",
+          image_url: {
+            url: `data:${mimeType};base64,${fileBase64}`,
+          },
+        };
+      } else {
+        throw new Error("NVIDIA asset upload failed and file is not an image");
+      }
+    }
+
     const response = await fetch(`${NVIDIA_NIM_URL}/chat/completions`, {
       method: "POST",
       headers: {
@@ -73,12 +126,7 @@ async function extractViaNvidia(
             role: "user",
             content: [
               { type: "text", text: EXTRACTION_PROMPT },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:${mimeType};base64,${fileBase64}`,
-                },
-              },
+              imageContent,
             ],
           },
         ],
