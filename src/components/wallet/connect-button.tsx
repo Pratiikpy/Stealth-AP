@@ -47,7 +47,23 @@ export function ConnectButton() {
         return;
       }
 
-      const result = await walletAPI.connect();
+      const programs = [
+        process.env.NEXT_PUBLIC_INVOICE_PROGRAM_ID || "stealthap_inv_v2.aleo",
+        process.env.NEXT_PUBLIC_PAYMENT_PROGRAM_ID || "stealthap_pay_v2.aleo",
+        "credits.aleo",
+      ];
+
+      let result: unknown;
+      if (wallet === "shield") {
+        // Shield: connect(network, decryptPermission, programs)
+        result = await walletAPI.connect("testnet", "AUTO_DECRYPT", programs);
+      } else if (wallet === "leo") {
+        // Leo: connect(decryptPermission, network, programs)
+        result = await walletAPI.connect("AUTO_DECRYPT", "testnet", programs);
+      } else {
+        // Puzzle, Fox: standard connect
+        result = await walletAPI.connect("AUTO_DECRYPT", "testnet", programs);
+      }
       const addr = typeof result === "string" ? result : (result as Record<string, string>)?.address ?? "";
 
       if (addr) {
