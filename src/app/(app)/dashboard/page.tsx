@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import type { Column } from "@/components/ui/data-table";
 import type { Invoice } from "@/lib/types";
-import { invoices as mockInvoices, stats } from "@/lib/mock-data";
+import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatMicro, formatDate } from "@/lib/utils";
 import { Plus, ArrowUpRight, TrendingUp, Clock, CheckCircle2, Users } from "lucide-react";
@@ -53,12 +53,19 @@ export default function DashboardPage() {
   const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=8", mockInvoices);
 
   const pendingCount = invoices.filter((i) => i.status === "pending").length;
+  const approvedCount = invoices.filter((i) => i.status === "approved").length;
   const activeVendorSet = new Set(invoices.map((i) => i.vendorId));
+  const totalPayable = invoices
+    .filter((i) => i.status === "pending" || i.status === "approved")
+    .reduce((sum, i) => sum + i.amount, 0);
+  const totalSettled = invoices
+    .filter((i) => i.status === "paid" || i.status === "settled")
+    .reduce((sum, i) => sum + i.amount, 0);
 
   const metricCards = [
-    { label: "Treasury Balance", value: stats.totalBalance, icon: TrendingUp, bg: "bg-[#C6F15C]" },
-    { label: "Total Payable", value: stats.totalPayable, icon: Clock, bg: "bg-[#B3A0FF]" },
-    { label: "Settled This Month", value: stats.settledThisMonth, icon: CheckCircle2, bg: "bg-white" },
+    { label: "Pending Invoices", value: pendingCount + approvedCount, icon: TrendingUp, bg: "bg-[#C6F15C]", isCount: true },
+    { label: "Total Payable", value: totalPayable, icon: Clock, bg: "bg-[#B3A0FF]", isCount: false },
+    { label: "Total Settled", value: totalSettled, icon: CheckCircle2, bg: "bg-white", isCount: false },
   ];
 
   return (
@@ -92,9 +99,9 @@ export default function DashboardPage() {
                 <metric.icon className="w-5 h-5 text-black" />
               </div>
               <p className="text-[32px] font-mono font-black leading-[1] tracking-tight text-black tabular-nums">
-                {formatMicro(metric.value, 0)}
+                {metric.isCount ? metric.value : formatMicro(metric.value, 0)}
               </p>
-              <p className="font-mono text-[11px] text-black/50 mt-1 uppercase tracking-wider">ALEO</p>
+              {!metric.isCount && <p className="font-mono text-[11px] text-black/50 mt-1 uppercase tracking-wider">ALEO</p>}
             </div>
           ))}
         </div>
@@ -107,14 +114,14 @@ export default function DashboardPage() {
             <Clock className="w-4 h-4 text-black" />
             <span className="font-mono text-[11px] uppercase tracking-wider font-bold text-black/60">Pending Approvals</span>
           </div>
-          <p className="text-[28px] font-mono font-black tracking-tight text-black">{pendingCount || stats.pendingApprovals}</p>
+          <p className="text-[28px] font-mono font-black tracking-tight text-black">{pendingCount}</p>
         </div>
         <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-5">
           <div className="flex items-center gap-2 mb-1">
             <Users className="w-4 h-4 text-black" />
             <span className="font-mono text-[11px] uppercase tracking-wider font-bold text-black/60">Active Vendors</span>
           </div>
-          <p className="text-[28px] font-mono font-black tracking-tight text-black">{activeVendorSet.size || stats.activeVendors}</p>
+          <p className="text-[28px] font-mono font-black tracking-tight text-black">{activeVendorSet.size}</p>
         </div>
       </div>
 
