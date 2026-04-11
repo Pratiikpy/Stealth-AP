@@ -165,6 +165,21 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
+    // When invoice is submitted for approval, auto-create approval record
+    if (body.status === "pending" && data) {
+      const { createServerClient } = await import("@supabase/ssr");
+      const adminClient = createServerClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL!,
+        process.env.SUPABASE_SERVICE_ROLE_KEY!,
+        { cookies: { getAll() { return []; }, setAll() {} } }
+      );
+      await adminClient.from("approvals").insert({
+        invoice_id: body.id,
+        approver_id: user.id,
+        status: "pending",
+      });
+    }
+
     return NextResponse.json({ data });
   } catch (err) {
     return NextResponse.json(
