@@ -105,7 +105,7 @@ export function ConnectButton() {
               <p className="px-3 py-2 font-mono text-[11px] font-bold text-text-4 uppercase tracking-wider">
                 Select Wallet
               </p>
-              {(["leo", "puzzle", "shield", "fox"] as WalletName[]).map((w) => {
+              {(["shield", "leo", "puzzle", "fox"] as WalletName[]).map((w) => {
                 const available = typeof window !== "undefined" && detectAvailableWallets().includes(w);
                 return (
                   <button

@@ -1,18 +1,18 @@
 // =============================================
-// STEALTHAP AUDIT — Test Suite
-// Tests for stealthap_audit.aleo
+// STEALTHAP AUDIT v2 — Test Suite
+// Tests for stealthap_aud_v2.aleo
 // =============================================
 
-import stealthap_audit.aleo;
+import stealthap_aud_v2.aleo;
 
-program test_stealthap_audit.aleo {
+program test_stealthap_aud_v2.aleo {
 
     // Test: verify_audit_proof rejects non-existent proofs
     @test
     @should_fail
     transition test_verify_nonexistent_proof() {
         // This should fail because no proof with this ID exists
-        stealthap_audit.aleo/verify_audit_proof(
+        stealthap_aud_v2.aleo/verify_audit_proof(
             123field,  // fake proof_id
             456field   // fake anchor
         );
@@ -22,7 +22,7 @@ program test_stealthap_audit.aleo {
     @test
     @should_fail
     transition test_verify_nonexistent_disclosure() {
-        stealthap_audit.aleo/verify_disclosure(
+        stealthap_aud_v2.aleo/verify_disclosure(
             789field,  // fake disclosure_id
             101field   // fake anchor
         );
@@ -32,7 +32,7 @@ program test_stealthap_audit.aleo {
     @test
     @should_fail
     transition test_verify_nonexistent_credit() {
-        stealthap_audit.aleo/verify_credit_score(
+        stealthap_aud_v2.aleo/verify_credit_score(
             111field,  // fake score_id
             222field   // fake anchor
         );

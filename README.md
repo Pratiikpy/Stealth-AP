@@ -52,13 +52,13 @@ StealthAP is accounts payable for crypto-native companies. Built on Aleo. Every 
 
 All 5 programs are live on Aleo testnet (v2). `@noupgrade` — immutable. [Verify on explorer →](https://explorer.provable.com/programs)
 
-| Program | Transitions | What It Does |
-|---------|-------------|-------------|
-| `stealthap_inv_v2.aleo` | 19 | Dual records, Merkle vendor allowlist, pseudonymous keys, duplicate detection |
-| `stealthap_pay_v2.aleo` | 13 | ALEO/USDCx/USAD private payments, escrow, scheduled payments, join/split |
-| `stealthap_wf_v2.aleo` | 14 | Private multi-sig approvals, spending limits, delegation, threshold routing |
-| `stealthap_aud_v2.aleo` | 11 | Selective disclosure, compliance proofs, ZK credit scoring |
-| `stealthap_bat_v2.aleo` | 7 | Commit-reveal epoch settlement, atomic batch execution |
+| Program | Transitions | Explorer |
+|---------|-------------|----------|
+| [`stealthap_inv_v2.aleo`](https://testnet.explorer.provable.com/program/stealthap_inv_v2.aleo) | 19 | Dual records, Merkle vendor allowlist, pseudonymous keys |
+| [`stealthap_pay_v2.aleo`](https://testnet.explorer.provable.com/program/stealthap_pay_v2.aleo) | 13 | ALEO/USDCx/USAD private payments, escrow, join/split |
+| [`stealthap_wf_v2.aleo`](https://testnet.explorer.provable.com/program/stealthap_wf_v2.aleo) | 14 | Private multi-sig, spending limits, delegation |
+| [`stealthap_aud_v2.aleo`](https://testnet.explorer.provable.com/program/stealthap_aud_v2.aleo) | 11 | Selective disclosure, compliance proofs, credit scoring |
+| [`stealthap_bat_v2.aleo`](https://testnet.explorer.provable.com/program/stealthap_bat_v2.aleo) | 7 | Commit-reveal epoch settlement |
 | **Total** | **64** | **2,955 lines of Leo** |
 
 ### Dependency Graph
