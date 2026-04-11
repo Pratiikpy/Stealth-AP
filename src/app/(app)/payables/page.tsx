@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { SlidePanel } from "@/components/ui/slide-panel";
 import { FileUploadZone } from "@/components/invoices/file-upload-zone";
 import { motion } from "framer-motion";
-import { Plus, Upload, Sparkles, Search, CheckCircle2 } from "lucide-react";
+import { Plus, Upload, Sparkles, Search, CheckCircle2, PenLine } from "lucide-react";
 import { SkeletonTable } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 import { createInvoiceOnChain } from "@/lib/aleo/programs/invoice";
@@ -97,10 +97,55 @@ export default function PayablesPage() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [entryMode, setEntryMode] = useState<"upload" | "manual">("upload");
   const [extractedData, setExtractedData] = useState<InvoiceExtraction | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
+
+  // Manual entry form state
+  const [manualForm, setManualForm] = useState({
+    vendor_name: "",
+    invoice_number: "",
+    amount: "",
+    tax_amount: "",
+    currency: "ALEO" as string,
+    issue_date: "",
+    due_date: "",
+    po_number: "",
+    notes: "",
+  });
+
+  function resetManualForm() {
+    setManualForm({
+      vendor_name: "",
+      invoice_number: "",
+      amount: "",
+      tax_amount: "",
+      currency: "ALEO",
+      issue_date: "",
+      due_date: "",
+      po_number: "",
+      notes: "",
+    });
+  }
+
+  function handleManualSave() {
+    // Construct extractedData from manual form fields
+    const data: InvoiceExtraction = {
+      vendor_name: manualForm.vendor_name || null,
+      invoice_number: manualForm.invoice_number || null,
+      amount: parseFloat(manualForm.amount) || 0,
+      tax_amount: parseFloat(manualForm.tax_amount) || 0,
+      due_date: manualForm.due_date || null,
+      issue_date: manualForm.issue_date || null,
+      line_items: [],
+      po_number: manualForm.po_number || null,
+      currency: manualForm.currency || "ALEO",
+      confidence: {},
+    };
+    setExtractedData(data);
+  }
 
   const { data: invoices, loading, isReal, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
 
@@ -223,6 +268,8 @@ export default function PayablesPage() {
     setShowCreate(false);
     setExtractedData(null);
     setExtractError(null);
+    setEntryMode("upload");
+    resetManualForm();
   }, []);
 
   const counts: Record<FilterKey, number> = useMemo(
@@ -344,19 +391,137 @@ export default function PayablesPage() {
       <SlidePanel open={showCreate} onClose={handleClosePanel} title="New Payable">
         {!extractedData ? (
           <div className="space-y-4">
-            <p className="text-[13px] font-mono text-black/70">
-              Upload an invoice PDF or image. AI will extract vendor, amounts, and line items automatically.
-            </p>
-            <FileUploadZone onFileSelected={handleFileSelected} loading={extracting} />
-            {extractError && (
-              <p className="text-xs font-mono text-red-600 font-bold">{extractError}</p>
+            {/* Mode toggle tabs */}
+            <div className="flex gap-0">
+              <button
+                onClick={() => setEntryMode("upload")}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
+                  entryMode === "upload"
+                    ? "bg-[#C6F15C] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                    : "bg-white text-black/50 hover:bg-[#E5E5E5]"
+                }`}
+              >
+                <Upload className="w-3 h-3" />
+                AI Upload
+              </button>
+              <button
+                onClick={() => setEntryMode("manual")}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black -ml-[2px] font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
+                  entryMode === "manual"
+                    ? "bg-[#A259FF] text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                    : "bg-white text-black/50 hover:bg-[#E5E5E5]"
+                }`}
+              >
+                <PenLine className="w-3 h-3" />
+                Manual Entry
+              </button>
+            </div>
+
+            {entryMode === "upload" ? (
+              <>
+                <p className="text-[13px] font-mono text-black/70">
+                  Upload an invoice PDF or image. AI will extract vendor, amounts, and line items automatically.
+                </p>
+                <FileUploadZone onFileSelected={handleFileSelected} loading={extracting} />
+                {extractError && (
+                  <p className="text-xs font-mono text-red-600 font-bold">{extractError}</p>
+                )}
+              </>
+            ) : (
+              /* Manual entry form */
+              <div className="space-y-3">
+                <p className="text-[13px] font-mono text-black/70">
+                  Enter invoice details manually. All fields with * are required.
+                </p>
+                <Input
+                  label="Vendor Name *"
+                  placeholder="Acme Corp"
+                  value={manualForm.vendor_name}
+                  onChange={(e) => setManualForm((f) => ({ ...f, vendor_name: e.target.value }))}
+                />
+                <Input
+                  label="Invoice Number *"
+                  placeholder="INV-001"
+                  value={manualForm.invoice_number}
+                  onChange={(e) => setManualForm((f) => ({ ...f, invoice_number: e.target.value }))}
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    label="Amount *"
+                    type="number"
+                    placeholder="0.00"
+                    value={manualForm.amount}
+                    onChange={(e) => setManualForm((f) => ({ ...f, amount: e.target.value }))}
+                  />
+                  <Input
+                    label="Tax"
+                    type="number"
+                    placeholder="0.00"
+                    value={manualForm.tax_amount}
+                    onChange={(e) => setManualForm((f) => ({ ...f, tax_amount: e.target.value }))}
+                  />
+                </div>
+
+                {/* Currency select */}
+                <div className="space-y-1.5">
+                  <label className="block font-mono text-xs font-bold uppercase tracking-wider text-text-3">
+                    Currency
+                  </label>
+                  <select
+                    value={manualForm.currency}
+                    onChange={(e) => setManualForm((f) => ({ ...f, currency: e.target.value }))}
+                    className="w-full border-2 border-black bg-white font-mono text-sm p-3 text-text-1 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all appearance-none cursor-pointer"
+                  >
+                    <option value="ALEO">ALEO</option>
+                    <option value="USDCx">USDCx</option>
+                    <option value="USAD">USAD</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    label="Issue Date"
+                    type="date"
+                    value={manualForm.issue_date}
+                    onChange={(e) => setManualForm((f) => ({ ...f, issue_date: e.target.value }))}
+                  />
+                  <Input
+                    label="Due Date"
+                    type="date"
+                    value={manualForm.due_date}
+                    onChange={(e) => setManualForm((f) => ({ ...f, due_date: e.target.value }))}
+                  />
+                </div>
+                <Input
+                  label="PO Number"
+                  placeholder="PO-12345 (optional)"
+                  value={manualForm.po_number}
+                  onChange={(e) => setManualForm((f) => ({ ...f, po_number: e.target.value }))}
+                />
+                <Input
+                  label="Notes"
+                  placeholder="Additional notes (optional)"
+                  value={manualForm.notes}
+                  onChange={(e) => setManualForm((f) => ({ ...f, notes: e.target.value }))}
+                />
+
+                <button
+                  onClick={handleManualSave}
+                  disabled={!manualForm.vendor_name || !manualForm.invoice_number || !manualForm.amount}
+                  className="w-full bg-[#A259FF] text-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2.5 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Review & Save
+                </button>
+              </div>
             )}
           </div>
         ) : (
           <div className="space-y-4">
             <div className="flex items-center gap-2 mb-2">
               <CheckCircle2 className="w-4 h-4 text-green-700" />
-              <p className="text-[13px] font-mono font-bold text-green-700 uppercase">Data extracted successfully</p>
+              <p className="text-[13px] font-mono font-bold text-green-700 uppercase">
+                {entryMode === "manual" ? "Review invoice details" : "Data extracted successfully"}
+              </p>
             </div>
             <Input
               label="Vendor Name"
@@ -454,7 +619,7 @@ export default function PayablesPage() {
                   setExtractError(null);
                 }}
               >
-                Re-upload
+                {entryMode === "manual" ? "Back" : "Re-upload"}
               </button>
               <button
                 className="flex-1 bg-[#C6F15C] text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50"

@@ -6,6 +6,8 @@ interface WalletState {
   address: string | null;
   connected: boolean;
   walletName: string | null;
+  /** Private key stored in memory only — never persisted. Used by burner wallet. */
+  privateKey: string | null;
   balance: {
     aleo: number;
     usdcx: number;
@@ -19,6 +21,7 @@ interface WalletState {
     message: string;
   };
   setConnected: (address: string, walletName: string) => void;
+  setBurnerConnected: (address: string, privateKey: string) => void;
   setDisconnected: () => void;
   setBalance: (balance: Partial<WalletState["balance"]>) => void;
   setTransactionStatus: (
@@ -40,12 +43,15 @@ export const useWalletStore = create<WalletState>((set) => ({
   address: null,
   connected: false,
   walletName: null,
+  privateKey: null,
   balance: { aleo: 0, usdcx: 0, usad: 0 },
   transaction: initialTransaction,
   setConnected: (address, walletName) =>
-    set({ address, connected: true, walletName }),
+    set({ address, connected: true, walletName, privateKey: null }),
+  setBurnerConnected: (address, privateKey) =>
+    set({ address, connected: true, walletName: "Burner Key", privateKey }),
   setDisconnected: () =>
-    set({ address: null, connected: false, walletName: null }),
+    set({ address: null, connected: false, walletName: null, privateKey: null }),
   setBalance: (balance) =>
     set((s) => ({ balance: { ...s.balance, ...balance } })),
   setTransactionStatus: (status, extra = {}) =>

@@ -1,17 +1,22 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Wallet, ChevronDown, Copy, LogOut, Check } from "lucide-react";
+import { Wallet, ChevronDown, Copy, LogOut, Check, KeyRound } from "lucide-react";
 import { truncateAddress } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { detectAvailableWallets, WALLET_INFO, type WalletName } from "@/lib/aleo/wallet-adapter";
 import { getTotalBalance } from "@/lib/aleo/records";
+import { getMappingValue } from "@/lib/aleo/client";
 import { formatMicro } from "@/lib/format";
 
 export function ConnectButton() {
-  const { address, connected, walletName, balance, setConnected, setDisconnected, setBalance } = useWalletStore();
+  const { address, connected, walletName, balance, setConnected, setBurnerConnected, setDisconnected, setBalance } = useWalletStore();
   const [showDropdown, setShowDropdown] = useState(false);
   const [showWalletPicker, setShowWalletPicker] = useState(false);
+  const [showBurnerForm, setShowBurnerForm] = useState(false);
+  const [burnerKey, setBurnerKey] = useState("");
+  const [burnerAddress, setBurnerAddress] = useState("");
+  const [burnerError, setBurnerError] = useState("");
   const [connecting, setConnecting] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -81,6 +86,48 @@ export function ConnectButton() {
     }
   }
 
+  async function handleBurnerConnect() {
+    setBurnerError("");
+
+    // Validate private key format
+    if (!burnerKey.startsWith("APrivateKey1")) {
+      setBurnerError("Key must start with APrivateKey1");
+      return;
+    }
+
+    // Validate address format
+    if (!burnerAddress.startsWith("aleo1") || burnerAddress.length < 60) {
+      setBurnerError("Address must start with aleo1 (63 chars)");
+      return;
+    }
+
+    setConnecting(true);
+    try {
+      setBurnerConnected(burnerAddress.trim(), burnerKey.trim());
+      setShowWalletPicker(false);
+      setShowBurnerForm(false);
+      setBurnerKey("");
+      setBurnerAddress("");
+
+      // Fetch public balance from Aleo API
+      getMappingValue("credits.aleo", "account", burnerAddress.trim())
+        .then((val) => {
+          if (val) {
+            const cleaned = val.replace(/"/g, "").replace(/u64$/, "").trim();
+            const microcredits = parseInt(cleaned, 10);
+            if (!isNaN(microcredits)) {
+              setBalance({ aleo: microcredits });
+            }
+          }
+        })
+        .catch(() => {});
+    } catch {
+      setBurnerError("Connection failed");
+    } finally {
+      setConnecting(false);
+    }
+  }
+
   async function handleDisconnect() {
     try {
       const w = window as unknown as Record<string, unknown>;
@@ -141,6 +188,54 @@ export function ConnectButton() {
                   </button>
                 );
               })}
+
+              {/* Divider */}
+              <div className="border-t-2 border-black my-1" />
+
+              {/* Burner / Paste Key option */}
+              <button
+                role="menuitem"
+                onClick={() => setShowBurnerForm(!showBurnerForm)}
+                disabled={connecting}
+                className="w-full flex items-center gap-3 px-3 py-2.5 font-mono text-sm font-bold uppercase text-black hover:bg-[#FF90E8]/20 transition-colors disabled:opacity-50"
+              >
+                <KeyRound className="h-4 w-4 text-black" />
+                <span className="flex-1 text-left">Paste Key</span>
+                <span className="font-mono text-[10px] font-bold text-[#A259FF] uppercase">Burner</span>
+              </button>
+
+              {/* Burner wallet form */}
+              {showBurnerForm && (
+                <div className="px-3 py-2 space-y-2 border-t-2 border-dashed border-black/30">
+                  <input
+                    type="password"
+                    placeholder="APrivateKey1zkp..."
+                    value={burnerKey}
+                    onChange={(e) => setBurnerKey(e.target.value)}
+                    className="w-full border-2 border-black bg-white font-mono text-[11px] p-2 placeholder:text-black/30 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                  />
+                  <input
+                    type="text"
+                    placeholder="aleo1abc...xyz"
+                    value={burnerAddress}
+                    onChange={(e) => setBurnerAddress(e.target.value)}
+                    className="w-full border-2 border-black bg-white font-mono text-[11px] p-2 placeholder:text-black/30 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                  />
+                  {burnerError && (
+                    <p className="font-mono text-[10px] font-bold text-[#EF4444]">{burnerError}</p>
+                  )}
+                  <button
+                    onClick={handleBurnerConnect}
+                    disabled={connecting || !burnerKey || !burnerAddress}
+                    className="w-full bg-[#A259FF] text-white border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider py-1.5 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-[2px] active:translate-y-[2px] transition-all disabled:opacity-40"
+                  >
+                    {connecting ? "Connecting..." : "Connect Burner"}
+                  </button>
+                  <p className="font-mono text-[9px] text-black/40 leading-tight">
+                    Key stays in memory only. Never persisted.
+                  </p>
+                </div>
+              )}
             </div>
           </>
         )}
