@@ -86,16 +86,17 @@ export async function executeViaSdk(
     const sdk = await import("@provablehq/sdk");
     const { ProgramManager, AleoKeyProvider, AleoNetworkClient, NetworkRecordProvider, Account, initializeWasm } = sdk;
 
-    await initializeWasm();
+    // initializeWasm is deprecated in latest SDK — no longer needed
 
     const account = new Account({ privateKey });
-    const networkClient = new AleoNetworkClient(`${ALEO_API_URL}/${NETWORK}`);
+    // SDK appends /testnet internally, so pass base URL only
+    const networkClient = new AleoNetworkClient(ALEO_API_URL);
     const keyProvider = new AleoKeyProvider();
     keyProvider.useCache(true);
     const recordProvider = new NetworkRecordProvider(account, networkClient);
 
     const programManager = new ProgramManager(
-      `${ALEO_API_URL}/${NETWORK}`,
+      ALEO_API_URL,
       keyProvider,
       recordProvider
     );
