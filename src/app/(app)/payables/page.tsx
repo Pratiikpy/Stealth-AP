@@ -93,6 +93,43 @@ const invoiceColumns: Column<Invoice>[] = [
   },
 ];
 
+function SubmitButton({ invoice, onSubmitted }: { invoice: Invoice; onSubmitted: () => void }) {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit() {
+    setLoading(true);
+    try {
+      const rawId = (invoice as unknown as { _raw?: { id: string } })._raw?.id;
+      if (!rawId) return;
+      const res = await fetch("/api/invoices", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: rawId, status: "pending" }),
+      });
+      if (res.ok) {
+        toast.success("Invoice submitted for approval");
+        onSubmitted();
+      }
+    } catch {
+      toast.error("Failed to submit");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  if (invoice.status !== "draft") return null;
+
+  return (
+    <button
+      onClick={handleSubmit}
+      disabled={loading}
+      className="bg-[#C6F15C] text-black border-2 border-black font-mono text-[10px] font-bold uppercase px-2 py-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] active:shadow-none active:translate-x-[2px] active:translate-y-[2px] disabled:opacity-50"
+    >
+      {loading ? "..." : "Submit"}
+    </button>
+  );
+}
+
 export default function PayablesPage() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
@@ -380,7 +417,14 @@ export default function PayablesPage() {
       ) : (
         <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-0 overflow-hidden">
           <DataTable
-            columns={invoiceColumns}
+            columns={[
+              ...invoiceColumns,
+              {
+                key: "actions",
+                label: "",
+                render: (row: Invoice) => <SubmitButton invoice={row} onSubmitted={refreshInvoices} />,
+              },
+            ]}
             data={filtered}
             getRowKey={(row: Invoice) => row.id}
           />
