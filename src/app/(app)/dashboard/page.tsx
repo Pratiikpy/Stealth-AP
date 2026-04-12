@@ -8,7 +8,6 @@ import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import type { Column } from "@/components/ui/data-table";
 import type { Invoice } from "@/lib/types";
-import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatMicro, formatDate } from "@/lib/utils";
 import { Plus, ArrowUpRight, TrendingUp, Clock, CheckCircle2, Users } from "lucide-react";
@@ -50,7 +49,7 @@ const invoiceColumns: Column<Invoice>[] = [
 ];
 
 export default function DashboardPage() {
-  const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=8", mockInvoices);
+  const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=8", []);
 
   const pendingCount = invoices.filter((i) => i.status === "pending").length;
   const approvedCount = invoices.filter((i) => i.status === "approved").length;

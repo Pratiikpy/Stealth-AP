@@ -55,8 +55,12 @@ export function useData<T>(
       setData(result as T);
       setIsReal(true);
     } catch (err) {
-      // API not available — fall back to mock data
-      setData(mockData);
+      // Error path — do NOT clobber the current data with the caller's
+      // initialValue. Previously this line reset to `mockData`, which
+      // caused fake invoices / vendors to flash onto dashboard cards any
+      // time the API hiccuped. Pages should pass an empty-shape initial
+      // value (e.g. `[]`) so the worst case is an empty state, not
+      // fictional content pretending to be the user's data.
       setIsReal(false);
       setError(err instanceof Error ? err.message : "Failed to fetch data");
     } finally {

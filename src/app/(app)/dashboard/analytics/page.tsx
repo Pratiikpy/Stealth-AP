@@ -1,7 +1,6 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { vendors as mockVendors, invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatMicro } from "@/lib/utils";
 import { PageHeader } from "@/components/ui/page-header";
@@ -48,9 +47,12 @@ type AnalyticsData = ReturnType<typeof buildFallback>;
 const CATEGORY_COLORS = ["bg-[#C6F15C]", "bg-[#B3A0FF]", "bg-[#FF90E8]", "bg-[#C6F15C]", "bg-[#B3A0FF]"];
 
 export default function AnalyticsPage() {
-  const { data: vendors } = useData<Vendor[]>("/api/vendors", mockVendors);
-  const { data: invoices, loading } = useData<Invoice[]>("/api/invoices", mockInvoices);
-  const fallback = buildFallback(mockVendors, mockInvoices);
+  const { data: vendors } = useData<Vendor[]>("/api/vendors", []);
+  const { data: invoices, loading } = useData<Invoice[]>("/api/invoices", []);
+  // Empty fallback keeps the UI rendering during load; real analytics comes
+  // from the /api/analytics endpoint. Previously we seeded with mock data
+  // which showed fictional "Aleo Infrastructure Co." etc. if the API erred.
+  const fallback = buildFallback([], []);
 
   const { data: analytics, isReal } = useData<AnalyticsData>("/api/analytics", fallback);
 

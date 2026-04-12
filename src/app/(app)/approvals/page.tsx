@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { approvals as mockApprovals, invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatDate } from "@/lib/utils";
 import { toastSuccess } from "@/lib/utils";
@@ -30,8 +29,8 @@ export default function ApprovalsPage() {
   // Admin-only "reveal" for cases where identity is genuinely needed.
   const [blindMode, setBlindMode] = useState(true);
 
-  const { data: approvals, refresh: refreshApprovals, isReal } = useData<Approval[]>("/api/approvals", mockApprovals);
-  const { data: invoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: approvals, refresh: refreshApprovals, isReal } = useData<Approval[]>("/api/approvals", []);
+  const { data: invoices } = useData<Invoice[]>("/api/invoices", []);
 
   /** Stable short hash for the redacted vendor display. Same vendor always
    *  maps to the same code within a session so an approver can still match

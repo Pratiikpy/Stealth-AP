@@ -23,12 +23,15 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(sp.get("limit") || "50");
     const offset = parseInt(sp.get("offset") || "0");
 
-    // Also join the latest approval so the UI can show the full on-chain
-    // trail (invoice-create tx + approval tx + payment tx) without an extra
-    // round trip. Privacy Trail panel on the payment flow reads this.
+    // Fetch invoices with the vendor join only — a stable, well-tested
+    // relationship. The approvals join was previously embedded here and
+    // caused the entire GET to 500 on some Supabase schemas where the
+    // reverse FK wasn't named as Postgrest expected, which in turn made
+    // every page fall back to the mock-data seed. Approvals are now
+    // fetched in a second, independent query and merged client-side.
     let query = supabase
       .from("invoices")
-      .select("*, vendors(name, payment_address), approvals(aleo_tx_id, status, decided_at)", { count: "exact" })
+      .select("*, vendors(name, payment_address)", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -47,6 +50,31 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error("[invoices GET] query failed", { userId: user.id, err: error.message });
       return NextResponse.json({ error: "Failed to fetch invoices" }, { status: 500 });
+    }
+
+    // Second query — fetch approvals for the returned invoices. If this
+    // errors (e.g. RLS misconfigured), we degrade gracefully: invoices
+    // still return, approvals attached as [].
+    const invoiceIds = (data ?? []).map((r: Record<string, unknown>) => r.id as string).filter(Boolean);
+    let approvalsByInvoice: Record<string, Array<{ aleo_tx_id: string | null; status: string; decided_at: string | null }>> = {};
+    if (invoiceIds.length > 0) {
+      const { data: approvalRows, error: approvalsErr } = await supabase
+        .from("approvals")
+        .select("invoice_id, aleo_tx_id, status, decided_at")
+        .in("invoice_id", invoiceIds);
+      if (approvalsErr) {
+        console.warn("[invoices GET] approvals join failed (non-fatal)", approvalsErr.message);
+      } else if (approvalRows) {
+        for (const r of approvalRows) {
+          const iid = r.invoice_id as string;
+          if (!approvalsByInvoice[iid]) approvalsByInvoice[iid] = [];
+          approvalsByInvoice[iid].push({
+            aleo_tx_id: r.aleo_tx_id,
+            status: r.status,
+            decided_at: r.decided_at,
+          });
+        }
+      }
     }
 
     // Transform DB rows to match frontend Invoice type (camelCase). ALSO keep
@@ -71,7 +99,7 @@ export async function GET(request: NextRequest) {
       txHash: row.aleo_tx_id || undefined,
       invoice_hash: row.invoice_hash || null,
       total_micro: (row.total_amount_micro as number) || (row.amount_micro as number) || 0,
-      approvals: row.approvals || [],
+      approvals: approvalsByInvoice[row.id as string] || [],
       _raw: row,
     }));
 

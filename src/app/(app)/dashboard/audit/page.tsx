@@ -5,7 +5,6 @@ import { motion } from "framer-motion";
 import { Shield, FileCheck, Clock } from "lucide-react";
 import { PageHeader } from "@/components/ui/page-header";
 import { useData } from "@/lib/hooks/use-data";
-import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useWalletStore } from "@/stores/wallet-store";
 import { generateAuditProof } from "@/lib/aleo/programs/audit";
 import { generateNonce, hashToField } from "@/lib/crypto";
@@ -38,7 +37,7 @@ export default function AuditPage() {
   const [dateEnd, setDateEnd] = useState(() => new Date().toISOString().split("T")[0]);
 
   const { data: proofs, refresh: refreshProofs, isReal } = useData<AuditProof[]>("/api/audit", MOCK_PROOFS);
-  const { data: allInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: allInvoices } = useData<Invoice[]>("/api/invoices", []);
   const { connected, address } = useWalletStore();
 
   // Compute real totals from invoices within the selected date range

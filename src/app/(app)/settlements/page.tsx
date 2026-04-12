@@ -1,8 +1,6 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { payments as mockPayments } from "@/lib/mock-data";
-import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatDate, formatMicro, shortHash } from "@/lib/utils";
 import { toastSuccess, toastError } from "@/lib/utils";
@@ -87,8 +85,8 @@ const paymentColumns: Column<Payment>[] = [
 ];
 
 export default function SettlementsPage() {
-  const { data: payments, loading, isReal, refresh: refreshPayments } = useData<Payment[]>("/api/payments", mockPayments);
-  const { data: invoices, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: payments, loading, isReal, refresh: refreshPayments } = useData<Payment[]>("/api/payments", []);
+  const { data: invoices, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", []);
   const [showPayment, setShowPayment] = useState(false);
   const [showInvoiceSelect, setShowInvoiceSelect] = useState(false);
   const [selectedInvoices, setSelectedInvoices] = useState<InvoiceRow[]>([]);

@@ -4,7 +4,6 @@ import { useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import { Plus } from "lucide-react";
 import { SkeletonTable } from "@/components/ui/skeleton";
-import { vendors as mockVendors } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { PageHeader } from "@/components/ui/page-header";
 import { Input } from "@/components/ui/input";
@@ -92,7 +91,7 @@ const emptyForm: VendorForm = {
 };
 
 export default function VendorsPage() {
-  const { data: vendors, loading, isReal, refresh: refreshVendors } = useData<Vendor[]>("/api/vendors", mockVendors);
+  const { data: vendors, loading, isReal, refresh: refreshVendors } = useData<Vendor[]>("/api/vendors", []);
   const [showAdd, setShowAdd] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<VendorForm>(emptyForm);

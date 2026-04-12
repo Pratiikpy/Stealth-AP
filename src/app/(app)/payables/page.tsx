@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useMemo, useCallback } from "react";
-import { invoices as mockInvoices } from "@/lib/mock-data";
 import { useData } from "@/lib/hooks/use-data";
 import { formatDate } from "@/lib/utils";
 import { toastSuccess } from "@/lib/utils";
@@ -205,7 +204,7 @@ export default function PayablesPage() {
     setNewVendor(emptyNewVendor);
   }
 
-  const { data: invoices, loading, isReal, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: invoices, loading, isReal, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", []);
   const { data: vendors, refresh: refreshVendors } = useData<VendorOption[]>("/api/vendors", []);
 
   async function createVendorInline() {
