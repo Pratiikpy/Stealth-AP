@@ -98,3 +98,44 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createServerSupabase();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json();
+    if (!body.id) {
+      return NextResponse.json({ error: "Missing vendor id" }, { status: 400 });
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.payment_address !== undefined) updates.payment_address = body.payment_address;
+    if (body.category !== undefined) updates.category = body.category;
+    if (body.contact_email !== undefined) updates.contact_email = body.contact_email;
+    if (body.default_token !== undefined) updates.default_token = body.default_token;
+
+    const { data, error } = await supabase
+      .from("vendors")
+      .update(updates)
+      .eq("id", body.id)
+      .select()
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ data });
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to update vendor" },
+      { status: 500 }
+    );
+  }
+}

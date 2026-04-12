@@ -41,8 +41,56 @@ export function PaymentFlow({
   const [progress, setProgress] = useState(0);
   const [proofChecklist, setProofChecklist] = useState<string[]>([]);
   const [settlementTime, setSettlementTime] = useState<string | null>(null);
+  const [addressInput, setAddressInput] = useState("");
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [resolvedAddress, setResolvedAddress] = useState<string | null>(null);
   const { connected, privateKey } = useWalletStore();
   const isBurnerWallet = !!privateKey;
+
+  // Resolve vendor payment address from invoice's joined vendor row
+  const firstInv = invoices[0] as typeof invoices[0] & {
+    vendors?: { payment_address?: string | null; name?: string };
+    payment_address?: string | null;
+    vendor_id?: string;
+  };
+  const existingAddress =
+    resolvedAddress ||
+    firstInv?.vendors?.payment_address ||
+    firstInv?.payment_address ||
+    null;
+  const needsAddress = !existingAddress || !existingAddress.startsWith("aleo1");
+
+  async function saveVendorAddress() {
+    const addr = addressInput.trim();
+    if (!addr.startsWith("aleo1") || addr.length < 60) {
+      toast.error("Address must start with aleo1 and be ~63 characters");
+      return;
+    }
+    if (!firstInv.vendor_id) {
+      // No vendor_id — just use the address locally for this payment
+      setResolvedAddress(addr);
+      toast.success("Address set for this payment");
+      return;
+    }
+    setSavingAddress(true);
+    try {
+      const res = await fetch("/api/vendors", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: firstInv.vendor_id, payment_address: addr }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || "Failed to update vendor");
+      }
+      setResolvedAddress(addr);
+      toast.success("Vendor address saved");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save address");
+    } finally {
+      setSavingAddress(false);
+    }
+  }
 
   const totalMicro = invoices.reduce((sum, inv) => sum + inv.total_micro, 0);
   const isBatch = invoices.length > 1;
@@ -55,18 +103,9 @@ export function PaymentFlow({
       return;
     }
 
-    // Resolve payee address before doing any work
-    const firstInv = invoices[0] as typeof invoices[0] & {
-      vendors?: { payment_address?: string | null };
-      payment_address?: string | null;
-    };
-    const payeeAddress =
-      firstInv.vendors?.payment_address ||
-      firstInv.payment_address ||
-      null;
-
+    const payeeAddress = existingAddress;
     if (!payeeAddress || !payeeAddress.startsWith("aleo1")) {
-      toast.error("Vendor has no payment address. Edit vendor to add their Aleo address.");
+      toast.error("Please set the vendor's payment address above");
       return;
     }
 
@@ -231,6 +270,43 @@ export function PaymentFlow({
           </div>
         </div>
 
+        {/* Payee address — show existing or prompt to enter */}
+        <div>
+          <label className="block font-mono text-xs font-bold uppercase tracking-wider text-text-3 mb-2">
+            Payee Address
+          </label>
+          {!needsAddress ? (
+            <div className="border-2 border-black bg-[#C6F15C] p-3">
+              <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-black/60 mb-1">
+                {firstInv?.vendors?.name || "Vendor"}
+              </p>
+              <p className="font-mono text-[11px] text-black break-all">
+                {existingAddress}
+              </p>
+            </div>
+          ) : (
+            <div className="border-2 border-black bg-[#FF90E8]/20 p-3 space-y-2">
+              <p className="font-mono text-[11px] font-bold uppercase tracking-wider text-black">
+                Vendor has no payment address. Add one:
+              </p>
+              <input
+                type="text"
+                placeholder="aleo1..."
+                value={addressInput}
+                onChange={(e) => setAddressInput(e.target.value)}
+                className="w-full border-2 border-black bg-white font-mono text-[11px] p-2 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+              />
+              <button
+                onClick={saveVendorAddress}
+                disabled={savingAddress || !addressInput}
+                className="w-full bg-black text-[#C6F15C] border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] disabled:opacity-40"
+              >
+                {savingAddress ? "Saving..." : "Save & Continue"}
+              </button>
+            </div>
+          )}
+        </div>
+
         <PrivacyIndicator message="These payments will be processed privately. No vendor names or amounts will be visible on-chain." />
 
         <div className="flex items-center gap-3">
@@ -238,6 +314,7 @@ export function PaymentFlow({
             onClick={() => setStep("confirm")}
             className="flex-1"
             icon={<ArrowRight className="h-4 w-4" />}
+            disabled={needsAddress}
           >
             Continue to Payment
           </Button>
