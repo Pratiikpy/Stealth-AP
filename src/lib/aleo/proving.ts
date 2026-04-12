@@ -62,12 +62,21 @@ export async function executeViaWallet(
       return { transactionId: null, status: "failed", error: "Wallet does not support executeTransaction" };
     }
 
+    // Shield-specific: its ShieldTransaction type extends the Provable
+    // TransactionOptions with a required `network` field. Omitting it was
+    // the last remaining cause of "Invalid transaction payload". See
+    // @provablehq/aleo-wallet-adaptor-shield's index.d.ts interface
+    // ShieldTransaction. Values are "mainnet" | "testnet" | "canary" from
+    // @provablehq/aleo-types Network enum — plain strings, not "aleo:1".
+    const network = process.env.NEXT_PUBLIC_ALEO_NETWORK || "testnet";
+
     const txPayload = {
       program: request.programId,
       function: request.functionName,
       inputs: request.inputs,
       fee: request.fee ?? 250_000,
       privateFee: false,
+      network,
     };
 
     console.log("[proving] executeTransaction payload", txPayload);

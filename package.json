@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@provablehq/aleo-types": "^0.3.0-alpha.3",
+    "@provablehq/aleo-wallet-adaptor-core": "^0.3.0-alpha.3",
+    "@provablehq/aleo-wallet-adaptor-shield": "^0.3.0-alpha.3",
     "@provablehq/sdk": "^0.10.2",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.101.1",

@@ -72,7 +72,7 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
     // per the demox-labs adapter spec (see Alpaca's WalletServiceImpl.ts:188-196
     // for the reference unwrap pattern).
     const requestFn = (wallet.requestRecords || wallet.requestRecordPlaintexts || wallet.getRecords) as
-      | ((p: string) => Promise<unknown>)
+      | ((p: string, includePlaintext?: boolean) => Promise<unknown>)
       | undefined;
 
     if (!requestFn) {
@@ -80,7 +80,12 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
       return [];
     }
 
-    const response = await requestFn.call(wallet, programId);
+    // Shield's requestRecords accepts (program, includePlaintext) — passing
+    // true makes Shield attach the Aleo plaintext string to each record
+    // object. That plaintext is exactly what Shield's executeTransaction
+    // wants back as a record input, so we avoid the lossy regex
+    // reconstruction path. Leo/Puzzle/Fox ignore the extra boolean arg.
+    const response = await requestFn.call(wallet, programId, true);
 
     // Unwrap: the wallet may return either { records: [...] } (canonical) or
     // a bare array (older adapter builds). Handle both.
