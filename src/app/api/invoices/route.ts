@@ -112,7 +112,7 @@ export async function POST(request: NextRequest) {
         pdf_hash: body.pdf_hash,
         confidence_score: body.confidence_score,
         extracted_data: body.extracted_data,
-        status: "draft",
+        status: "pending",
         company_id: profile.company_id,
         created_by: user.id,
       })
@@ -122,6 +122,15 @@ export async function POST(request: NextRequest) {
     if (error) {
       console.log("[StealthAP] Invoice insert error:", error.message, error.details, error.hint);
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Auto-create approval record so invoice appears in /approvals
+    if (data) {
+      await supabase.from("approvals").insert({
+        invoice_id: data.id,
+        approver_id: user.id,
+        status: "pending",
+      });
     }
 
     return NextResponse.json({ data }, { status: 201 });
