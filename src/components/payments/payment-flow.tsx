@@ -41,98 +41,99 @@ export function PaymentFlow({
   const [progress, setProgress] = useState(0);
   const [proofChecklist, setProofChecklist] = useState<string[]>([]);
   const [settlementTime, setSettlementTime] = useState<string | null>(null);
-  const { connected } = useWalletStore();
+  const { connected, privateKey } = useWalletStore();
+  const isBurnerWallet = !!privateKey;
 
   const totalMicro = invoices.reduce((sum, inv) => sum + inv.total_micro, 0);
   const isBatch = invoices.length > 1;
   const aleoTx = useAleoTransaction();
 
   async function handleConfirmPay() {
+    // Guard: must have wallet connected
+    if (!connected) {
+      toast.error("Connect your wallet first");
+      return;
+    }
+
+    // Resolve payee address before doing any work
+    const firstInv = invoices[0] as typeof invoices[0] & {
+      vendors?: { payment_address?: string | null };
+      payment_address?: string | null;
+    };
+    const payeeAddress =
+      firstInv.vendors?.payment_address ||
+      firstInv.payment_address ||
+      null;
+
+    if (!payeeAddress || !payeeAddress.startsWith("aleo1")) {
+      toast.error("Vendor has no payment address. Edit vendor to add their Aleo address.");
+      return;
+    }
+
     setStep("processing");
     const startTime = Date.now();
 
-    // Step 1: Scan wallet for records
-    setProofChecklist(["Scanning wallet for records"]);
-    setProgress(10);
-
     try {
-      const creditsRecords = await getCreditsRecords();
-      const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
-
-      setProofChecklist((prev) => [...prev, "Vendor names hashed"]);
-      setProgress(25);
-
-      if (!payRecord && connected) {
-        // No sufficient record found — still allow demo flow
-        setProofChecklist((prev) => [...prev, "Payment amounts encrypted"]);
-        setProgress(50);
-      } else {
-        setProofChecklist((prev) => [...prev, "Payment amounts encrypted"]);
-        setProgress(50);
-      }
-
-      // Step 2: Execute transaction via wallet or DPS
-      setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
-      setProgress(70);
-
       const PAYMENT_PROGRAM = process.env.NEXT_PUBLIC_PAYMENT_PROGRAM_ID || "stealthap_pay_v2.aleo";
       const nonce = generateNonce();
 
-      // Execute real transaction if wallet connected, otherwise demo
-      if (connected && payRecord) {
-        // Resolve payee address from the invoice's joined vendor row.
-        // Invoices now always link to a vendor (vendor-first flow), so
-        // payment_address comes from `invoices.vendors.payment_address`.
-        const firstInv = invoices[0] as typeof invoices[0] & {
-          vendors?: { payment_address?: string | null };
-          payment_address?: string | null;
-        };
-        const payeeAddress =
-          firstInv.vendors?.payment_address ||
-          firstInv.payment_address ||
-          null;
+      let payRecordCiphertext: string;
 
-        if (!payeeAddress || !payeeAddress.startsWith("aleo1")) {
-          toast.error("Invoice has no payment address. Check vendor.");
-          setStep("review");
-          return;
-        }
-
-        // Contract signature: (pay_record, payee, invoice_id, amount, invoice_amount, paid_at, nonce)
-        const result = await aleoTx.execute(
-          PAYMENT_PROGRAM,
-          "pay_credits_private",
-          [
-            payRecord.ciphertext,
-            payeeAddress,
-            `${invoices[0].invoice_hash || "0"}field`,
-            `${totalMicro}u64`,
-            `${totalMicro}u64`, // invoice_amount — enforces amount >= invoice_amount
-            `${nowTimestamp()}u32`,
-            `${nonce}field`,
-          ],
-          { successMessage: `Payment of ${formatMicro(totalMicro)} confirmed` }
-        );
-
-        if (result.status === "failed") {
-          toast.error(result.error || "Transaction failed on-chain");
-          setStep("review");
-          setProgress(0);
-          setProofChecklist([]);
-          return;
-        }
-
-        invalidateRecordCache();
-        // Refresh balance after payment
-        getTotalBalance().then(({ aleo }) => {
-          useWalletStore.getState().setBalance({ aleo: Number(aleo) });
-        }).catch(() => {});
+      if (isBurnerWallet) {
+        // Burner wallet — SDK will fetch records internally using the private key.
+        // We pass an empty string placeholder; SDK resolves via RecordProvider.
+        setProofChecklist(["Fetching credits record via SDK"]);
+        setProgress(25);
+        payRecordCiphertext = "";
       } else {
-        // No wallet connected or no sufficient record — cannot proceed
-        toast.error("Connect wallet and ensure sufficient balance to pay.");
+        // Extension wallet — scan wallet for records
+        setProofChecklist(["Scanning wallet for records"]);
+        setProgress(15);
+        const creditsRecords = await getCreditsRecords();
+        const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
+        if (!payRecord) {
+          toast.error(
+            `No credits record with ${formatMicro(totalMicro)} ALEO. Your balance may be in smaller records. Try a smaller payment or consolidate.`
+          );
+          setStep("review");
+          return;
+        }
+        payRecordCiphertext = payRecord.ciphertext;
+        setProofChecklist((prev) => [...prev, "Credits record found"]);
+        setProgress(40);
+      }
+
+      setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
+      setProgress(70);
+
+      // Contract signature: (pay_record, payee, invoice_id, amount, invoice_amount, paid_at, nonce)
+      const result = await aleoTx.execute(
+        PAYMENT_PROGRAM,
+        "pay_credits_private",
+        [
+          payRecordCiphertext,
+          payeeAddress,
+          `${invoices[0].invoice_hash || "0"}field`,
+          `${totalMicro}u64`,
+          `${totalMicro}u64`,
+          `${nowTimestamp()}u32`,
+          `${nonce}field`,
+        ],
+        { successMessage: `Payment of ${formatMicro(totalMicro)} ALEO confirmed` }
+      );
+
+      if (result.status === "failed") {
+        toast.error(result.error || "Transaction failed on-chain");
         setStep("review");
+        setProgress(0);
+        setProofChecklist([]);
         return;
       }
+
+      invalidateRecordCache();
+      getTotalBalance().then(({ aleo }) => {
+        useWalletStore.getState().setBalance({ aleo: Number(aleo) });
+      }).catch(() => {});
 
       setProofChecklist((prev) => [...prev, "Broadcasting to Aleo"]);
       setProgress(100);
@@ -140,12 +141,10 @@ export function PaymentFlow({
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
       setSettlementTime(`${elapsed}s`);
 
-      // Notify parent to persist the payment to DB
       onSuccess?.(invoices, aleoTx.txId ?? undefined);
-
       setStep("success");
     } catch (err) {
-      // On-chain failed — show error, go back to review, do NOT save to DB
+      console.error("[PaymentFlow] Error:", err);
       toast.error(err instanceof Error ? err.message : "Payment failed. Please try again.");
       setStep("review");
       setProgress(0);
