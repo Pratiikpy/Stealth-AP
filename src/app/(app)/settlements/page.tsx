@@ -95,8 +95,8 @@ export default function SettlementsPage() {
   };
 
   function getPaymentAddress(inv: Invoice): string | null {
-    const raw = (inv as InvoiceWithRaw)._raw;
-    return raw?.vendors?.payment_address || null;
+    const withVendors = inv as Invoice & { vendors?: { payment_address?: string } };
+    return withVendors.vendors?.payment_address || null;
   }
 
   // Get approved invoices that are ready for payment — only those with a
@@ -113,18 +113,34 @@ export default function SettlementsPage() {
 
   function handleSelectInvoice(inv: Invoice) {
     const payeeAddress = getPaymentAddress(inv);
+    // Handle both API (snake_case) and mock (camelCase) field formats
+    const apiInv = inv as Invoice & {
+      invoice_number?: string;
+      vendor_id?: string;
+      amount_micro?: number;
+      total_amount_micro?: number;
+      due_date?: string;
+      created_at?: string;
+      vendors?: { name?: string; payment_address?: string };
+    };
+    const vendorName = apiInv.vendors?.name || inv.vendorName || "—";
+    const amount = apiInv.total_amount_micro ?? apiInv.amount_micro ?? inv.amount ?? 0;
+    const dueDate = apiInv.due_date || inv.dueDate || "";
+    const createdAt = apiInv.created_at || inv.createdAt || "";
+    const invoiceNumber = apiInv.invoice_number || inv.id;
+
     const row: InvoiceRow & { vendors?: { payment_address?: string; name?: string } } = {
       id: inv.id,
       company_id: "",
-      invoice_number: inv.id,
-      vendor_id: inv.vendorId,
-      vendor_name: inv.vendorName,
-      amount_micro: inv.amount,
+      invoice_number: invoiceNumber,
+      vendor_id: apiInv.vendor_id || inv.vendorId,
+      vendor_name: vendorName,
+      amount_micro: amount,
       tax_micro: 0,
-      total_micro: inv.amount,
+      total_micro: amount,
       currency: (inv.token as "ALEO" | "USDCx" | "USAD") || "ALEO",
-      issue_date: inv.createdAt,
-      due_date: inv.dueDate,
+      issue_date: createdAt,
+      due_date: dueDate,
       line_items: [],
       pdf_url: null,
       po_number: null,
@@ -137,11 +153,10 @@ export default function SettlementsPage() {
       paid_at: null,
       aleo_record_id: null,
       invoice_hash: inv.txHash ?? null,
-      created_at: inv.createdAt,
-      updated_at: inv.createdAt,
-      // Forward the joined vendor info so PaymentFlow can resolve the payee
+      created_at: createdAt,
+      updated_at: createdAt,
       vendors: payeeAddress
-        ? { payment_address: payeeAddress, name: inv.vendorName }
+        ? { payment_address: payeeAddress, name: vendorName }
         : undefined,
     };
     setSelectedInvoices([row]);
@@ -285,24 +300,39 @@ export default function SettlementsPage() {
             </p>
           ) : (
             <div className="space-y-2">
-              {approvedInvoices.map((inv) => (
-                <button
-                  key={inv.id}
-                  onClick={() => handleSelectInvoice(inv)}
-                  className="w-full text-left bg-white border-2 border-black p-4 hover:bg-[#C6F15C]/20 hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-mono text-[13px] font-bold text-black">{inv.vendorName}</span>
-                    <span className="font-mono text-[14px] font-black text-black tabular-nums">
-                      {formatMicro(inv.amount)}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] text-black/50">{inv.id}</span>
-                    <span className="font-mono text-[11px] text-black/40">Due {formatDate(inv.dueDate)}</span>
-                  </div>
-                </button>
-              ))}
+              {approvedInvoices.map((inv) => {
+                const apiInv = inv as Invoice & {
+                  invoice_number?: string;
+                  total_amount_micro?: number;
+                  amount_micro?: number;
+                  due_date?: string;
+                  vendors?: { name?: string };
+                };
+                const vendorName = apiInv.vendors?.name || inv.vendorName || "—";
+                const amount = apiInv.total_amount_micro ?? apiInv.amount_micro ?? inv.amount ?? 0;
+                const dueDate = apiInv.due_date || inv.dueDate || "";
+                const invoiceNumber = apiInv.invoice_number || inv.id;
+                return (
+                  <button
+                    key={inv.id}
+                    onClick={() => handleSelectInvoice(inv)}
+                    className="w-full text-left bg-white border-2 border-black p-4 hover:bg-[#C6F15C]/20 hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-mono text-[13px] font-bold text-black">{vendorName}</span>
+                      <span className="font-mono text-[14px] font-black text-black tabular-nums">
+                        {formatMicro(amount)}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[11px] text-black/50">{invoiceNumber}</span>
+                      {dueDate && (
+                        <span className="font-mono text-[11px] text-black/40">Due {formatDate(dueDate)}</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
