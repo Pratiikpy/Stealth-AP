@@ -58,16 +58,24 @@ export function ConnectButton() {
         "credits.aleo",
       ];
 
+      // DecryptPermission.OnChainHistory from @demox-labs/aleo-wallet-adapter-base.
+      // Alpaca Invoice uses this value in production; it decrypts records for
+      // the programs explicitly listed in `programs[]` (credits.aleo + app
+      // programs). "AUTO_DECRYPT" is a valid enum value but some wallets
+      // interpret it differently — OnChainHistory is portable across Shield,
+      // Leo, Puzzle, and Fox.
+      const DECRYPT_PERMISSION = "ON_CHAIN_HISTORY";
+
       let result: unknown;
       if (wallet === "shield") {
         // Shield: connect(network, decryptPermission, programs)
-        result = await walletAPI.connect("testnet", "AUTO_DECRYPT", programs);
+        result = await walletAPI.connect("testnet", DECRYPT_PERMISSION, programs);
       } else if (wallet === "leo") {
         // Leo: connect(decryptPermission, network, programs)
-        result = await walletAPI.connect("AUTO_DECRYPT", "testnet", programs);
+        result = await walletAPI.connect(DECRYPT_PERMISSION, "testnet", programs);
       } else {
         // Puzzle, Fox: standard connect
-        result = await walletAPI.connect("AUTO_DECRYPT", "testnet", programs);
+        result = await walletAPI.connect(DECRYPT_PERMISSION, "testnet", programs);
       }
       const addr = typeof result === "string" ? result : (result as Record<string, string>)?.address ?? "";
 

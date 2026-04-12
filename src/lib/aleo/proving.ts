@@ -48,32 +48,57 @@ export async function executeViaWallet(
   }
 
   const wallet = walletAPIs[0] as Record<string, unknown>;
+  const { address } = useWalletStore.getState();
+  const network = process.env.NEXT_PUBLIC_ALEO_NETWORK || "testnet";
+  // Aleo chain IDs — see @demox-labs/aleo-wallet-adapter-base source.
+  // testnet: "aleo:1", mainnet: "aleo:0", testnetBeta: "aleo:1".
+  const chainId = network === "mainnet" ? "aleo:0" : "aleo:1";
 
   try {
-    // Shield uses executeTransaction, Leo/Puzzle/Fox use requestTransaction
-    const execFn = (wallet.executeTransaction || wallet.requestTransaction) as Function;
+    // Canonical @demox-labs adapter API: requestTransaction({address, chainId,
+    // transitions: [{program, functionName, inputs}], fee, feePrivate}).
+    // Previously we built a Shield-specific flat payload with programName +
+    // privateFee — Shield doesn't accept that shape and the call silently
+    // hung. See Alpaca's WalletServiceImpl.ts:517-537 for the working shape.
+    const execFn = (wallet.requestTransaction || wallet.executeTransaction) as Function | undefined;
     if (!execFn) {
-      return { transactionId: null, status: "failed", error: "Wallet does not support transaction execution" };
+      return { transactionId: null, status: "failed", error: "Wallet does not support requestTransaction" };
     }
 
     const txPayload = {
-      type: "execute",
-      programId: request.programId,
-      programName: request.programId, // Shield uses programName
-      functionName: request.functionName,
-      inputs: request.inputs,
-      fee: request.fee ?? 10000,
-      privateFee: false,
+      address: address || "",
+      chainId,
+      transitions: [
+        {
+          program: request.programId,
+          functionName: request.functionName,
+          inputs: request.inputs,
+        },
+      ],
+      // Alpaca uses 250_000 as the default priority fee on testnet. 10k
+      // silently rejects below the minimum.
+      fee: request.fee ?? 250_000,
+      feePrivate: false,
     };
 
+    console.log("[proving] requestTransaction payload", txPayload);
     const result = await execFn.call(wallet, txPayload);
+    console.log("[proving] requestTransaction result", result);
+
+    // Wallet returns a transactionId (string) or { transactionId } depending
+    // on the adapter version — normalize.
+    const txId =
+      typeof result === "string"
+        ? result
+        : (result as { transactionId?: string } | null)?.transactionId ?? null;
 
     return {
-      transactionId: (result as { transactionId?: string })?.transactionId ?? null,
+      transactionId: txId,
       status: "submitted",
       error: null,
     };
   } catch (err) {
+    console.error("[proving] requestTransaction threw", err);
     return {
       transactionId: null,
       status: "failed",

@@ -83,7 +83,7 @@ const paymentColumns: Column<Payment>[] = [
 
 export default function SettlementsPage() {
   const { data: payments, loading, isReal, refresh: refreshPayments } = useData<Payment[]>("/api/payments", mockPayments);
-  const { data: invoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: invoices, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
   const [showPayment, setShowPayment] = useState(false);
   const [showInvoiceSelect, setShowInvoiceSelect] = useState(false);
   const [selectedInvoices, setSelectedInvoices] = useState<InvoiceRow[]>([]);
@@ -343,6 +343,7 @@ export default function SettlementsPage() {
           onClose={() => setShowPayment(false)}
           onComplete={() => setShowPayment(false)}
           onSuccess={handlePaymentSuccess}
+          onVendorUpdated={refreshInvoices}
         />
       </SlidePanel>
     </motion.div>

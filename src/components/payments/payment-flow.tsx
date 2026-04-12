@@ -18,8 +18,18 @@ import { formatMicro } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
 import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance } from "@/lib/aleo/records";
+import { getMappingValue } from "@/lib/aleo/client";
 import { generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { InvoiceRow as Invoice, CurrencyFlag } from "@/types";
+
+/** Parse a raw `credits.aleo::account` mapping string like `"52000000u64"` into microcredits. */
+function parseAccountMicrocredits(raw: string | null): number {
+  if (!raw) return 0;
+  const cleaned = raw.replace(/"/g, "").replace(/u64$/, "").trim();
+  if (cleaned === "null" || cleaned === "") return 0;
+  const n = parseInt(cleaned, 10);
+  return Number.isNaN(n) ? 0 : n;
+}
 
 type PaymentStep = "review" | "confirm" | "processing" | "success";
 
@@ -28,6 +38,10 @@ interface PaymentFlowProps {
   onClose: () => void;
   onComplete: () => void;
   onSuccess?: (invoices: Invoice[], txId?: string) => void;
+  /** Called after a vendor-side mutation (e.g. payment_address save) so the
+   *  parent can refetch its invoice list. Without this, the next payment for
+   *  the same vendor still asks for the address the user just saved. */
+  onVendorUpdated?: () => void;
 }
 
 export function PaymentFlow({
@@ -35,6 +49,7 @@ export function PaymentFlow({
   onClose,
   onComplete,
   onSuccess,
+  onVendorUpdated,
 }: PaymentFlowProps) {
   const [step, setStep] = useState<PaymentStep>("review");
   const [token, setToken] = useState<CurrencyFlag>("ALEO");
@@ -86,7 +101,13 @@ export function PaymentFlow({
         throw new Error(err.error || "Failed to update vendor");
       }
       setResolvedAddress(addr);
-      toast.success("Vendor address saved");
+      // Patch the in-memory invoice so this panel session stops asking. The
+      // parent still needs a refetch for subsequent invoices of the same
+      // vendor; onVendorUpdated triggers that.
+      if (firstInv.vendors) firstInv.vendors.payment_address = addr;
+      else (firstInv as unknown as Record<string, unknown>).vendors = { payment_address: addr, name: firstInv.vendor_name };
+      onVendorUpdated?.();
+      toast.success("Vendor address saved for all future payments");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save address");
     } finally {
@@ -98,8 +119,18 @@ export function PaymentFlow({
   const isBatch = invoices.length > 1;
   const aleoTx = useAleoTransaction();
 
+  /**
+   * Return to the review step and clear all processing UI state. Call this
+   * from every early-return in the pay flow so the progress bar never stays
+   * pinned at whatever value it had when we bailed.
+   */
+  function bailToReview() {
+    setStep("review");
+    setProgress(0);
+    setProofChecklist([]);
+  }
+
   async function handleConfirmPay() {
-    // Guard: must have wallet connected
     if (!connected) {
       toast.error("Connect your wallet first");
       return;
@@ -118,67 +149,116 @@ export function PaymentFlow({
       const PAYMENT_PROGRAM = process.env.NEXT_PUBLIC_PAYMENT_PROGRAM_ID || "stealthap_pay_v2.aleo";
       const nonce = generateNonce();
 
-      let payRecordCiphertext: string;
+      // Sentinel passed when no ciphertext is available client-side.
+      // The server-side SDK route resolves it via NetworkRecordProvider.
+      let payRecordCiphertext: string = "__AUTO_RECORD__";
 
-      if (isBurnerWallet) {
-        // Burner wallet — SDK will fetch records internally using the private key.
-        // We pass an empty string placeholder; SDK resolves via RecordProvider.
-        setProofChecklist(["Fetching credits record via SDK"]);
-        setProgress(25);
-        payRecordCiphertext = "";
-      } else {
-        // Extension wallet — scan wallet for records
+      // Step 1: Try to find a private record locally (extension wallets only —
+      // burner can't scan records from the browser without heavy WASM).
+      if (!isBurnerWallet) {
         setProofChecklist(["Scanning wallet for private records"]);
         setProgress(15);
         const creditsRecords = await getCreditsRecords();
         const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
-
-        if (!payRecord) {
-          // Check if user has public balance to shield
-          const { balance } = useWalletStore.getState();
-          const publicBalance = balance?.aleo || 0;
-
-          if (publicBalance >= totalMicro) {
-            // Offer shield flow
-            toast.info("Public balance detected. Converting to private record...");
-
-            // Call credits.aleo::transfer_public_to_private
-            const { address } = useWalletStore.getState();
-            if (!address) {
-              toast.error("Wallet address unavailable");
-              setStep("review");
-              return;
-            }
-
-            const shieldResult = await aleoTx.execute(
+        if (payRecord) {
+          payRecordCiphertext = payRecord.ciphertext;
+          setProofChecklist((prev) => [...prev, "Credits record found"]);
+          setProgress(40);
+        } else if (creditsRecords.length >= 2) {
+          // No single record is large enough. Check whether summing the two
+          // biggest would cover the spend — if so, ask the user to join them
+          // via credits.aleo::join before retrying. (pay_credits_private takes
+          // exactly one credits record as input; multi-record spend is not
+          // supported by the contract signature.)
+          const sorted = [...creditsRecords].sort((a, b) =>
+            a.microcredits > b.microcredits ? -1 : a.microcredits < b.microcredits ? 1 : 0
+          );
+          const topTwoSum = sorted[0].microcredits + sorted[1].microcredits;
+          if (topTwoSum >= BigInt(totalMicro)) {
+            const r1 = sorted[0], r2 = sorted[1];
+            toast.info(`Your largest record is ${formatMicro(Number(r1.microcredits))}. Merging two records to cover ${formatMicro(totalMicro)}...`);
+            const joinResult = await aleoTx.execute(
               "credits.aleo",
-              "transfer_public_to_private",
-              [address, `${totalMicro}u64`],
-              { successMessage: "Funds shielded — now retry payment" }
+              "join",
+              [r1.ciphertext, r2.ciphertext],
+              { successMessage: "Records merged — wait ~2 min, then retry Pay." }
             );
-
-            if (shieldResult.status === "failed") {
-              toast.error(shieldResult.error || "Failed to shield funds");
-              setStep("review");
+            if (joinResult.status === "failed") {
+              toast.error(joinResult.error || "Failed to merge records");
+              bailToReview();
               return;
             }
-
-            // Invalidate cache and retry record fetch
             invalidateRecordCache();
-            toast.success("Funds shielded. Retrying payment...");
-            // After shield, the user needs to retry — record propagation takes time
-            toast.info("Wait ~2 min then click Pay again");
-            setStep("review");
-            return;
-          } else {
-            toast.error(`Insufficient balance. Need ${formatMicro(totalMicro)} ALEO.`);
-            setStep("review");
+            toast.info("Wait ~2 min for chain confirmation, then click Pay.");
+            bailToReview();
             return;
           }
         }
-        payRecordCiphertext = payRecord.ciphertext;
-        setProofChecklist((prev) => [...prev, "Credits record found"]);
-        setProgress(40);
+      } else {
+        setProofChecklist(["Burner mode — server will resolve record"]);
+        setProgress(25);
+      }
+
+      // Step 2: If we still don't have a private record ciphertext, check public
+      // balance on-chain and offer the shield flow. Applies to BOTH extension and
+      // burner wallets — burner users with only public balance otherwise hit a
+      // cryptic SDK error when the server can't find a record to spend.
+      if (payRecordCiphertext === "__AUTO_RECORD__") {
+        const { address } = useWalletStore.getState();
+        if (!address) {
+          toast.error("Wallet address unavailable");
+          bailToReview();
+          return;
+        }
+
+        // Refetch on-chain public balance — store value may be stale or unset.
+        const raw = await getMappingValue("credits.aleo", "account", address);
+        const publicBalance = parseAccountMicrocredits(raw);
+        useWalletStore.getState().setBalance({ aleo: publicBalance });
+
+        if (publicBalance >= totalMicro) {
+          toast.info(
+            isBurnerWallet
+              ? "Shielding public balance so the SDK can spend it privately..."
+              : "No private record — shielding public balance first."
+          );
+
+          const shieldResult = await aleoTx.execute(
+            "credits.aleo",
+            "transfer_public_to_private",
+            [address, `${totalMicro}u64`],
+            { successMessage: "Funds shielded — wait ~2 min, then retry Pay." }
+          );
+
+          if (shieldResult.status === "failed") {
+            toast.error(shieldResult.error || "Failed to shield funds");
+            bailToReview();
+            return;
+          }
+
+          invalidateRecordCache();
+          toast.info("Wait ~2 min for chain confirmation, then click Pay.");
+          bailToReview();
+          return;
+        }
+
+        // No public balance. For burner, server-side may still find a private
+        // record; let the execute call proceed with the sentinel. For extension
+        // wallets, we already scanned — genuinely insufficient funds.
+        if (!isBurnerWallet) {
+          const records = await getCreditsRecords();
+          const totalPrivate = records.reduce((s, r) => s + r.microcredits, BigInt(0));
+          const detail =
+            records.length === 0
+              ? "Wallet returned 0 records. Open DevTools console and look for [records] warnings — likely a DecryptPermission issue."
+              : `Private records total ${formatMicro(Number(totalPrivate))} across ${records.length} record(s); none individually ≥ ${formatMicro(totalMicro)}. Use credits.aleo::join to merge, or pay a smaller amount.`;
+          toast.error(
+            `Can't pay ${formatMicro(totalMicro)} ALEO. Public: ${formatMicro(publicBalance)}. ${detail}`,
+            { duration: 12000 }
+          );
+          bailToReview();
+          return;
+        }
       }
 
       setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
@@ -202,9 +282,7 @@ export function PaymentFlow({
 
       if (result.status === "failed") {
         toast.error(result.error || "Transaction failed on-chain");
-        setStep("review");
-        setProgress(0);
-        setProofChecklist([]);
+        bailToReview();
         return;
       }
 
@@ -224,9 +302,7 @@ export function PaymentFlow({
     } catch (err) {
       console.error("[PaymentFlow] Error:", err);
       toast.error(err instanceof Error ? err.message : "Payment failed. Please try again.");
-      setStep("review");
-      setProgress(0);
-      setProofChecklist([]);
+      bailToReview();
     }
   }
 

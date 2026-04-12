@@ -7,7 +7,7 @@ interface WalletState {
   address: string | null;
   connected: boolean;
   walletName: string | null;
-  /** Private key stored in memory only — never persisted to storage. Used by burner wallet. */
+  /** Burner private key. Persisted to sessionStorage (wiped on tab close). */
   privateKey: string | null;
   balance: {
     aleo: number;
@@ -77,12 +77,14 @@ export const useWalletStore = create<WalletState>()(
         }
       ),
       partialize: (state) => ({
-        // Persist connection state but NOT the private key
         address: state.address,
         connected: state.connected,
         walletName: state.walletName,
         balance: state.balance,
-        // privateKey is explicitly excluded — stays in memory only
+        // Testnet burner key persists to sessionStorage (wiped on tab close).
+        // Required so the burner flow survives navigation — without it, every
+        // route change silently downgrades the wallet to "extension" mode.
+        privateKey: state.privateKey,
       }),
     }
   )

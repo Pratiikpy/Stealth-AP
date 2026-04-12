@@ -16,7 +16,16 @@ export interface ParsedRecord {
   owner: string;
   data: Record<string, string>;
   nonce: string;
+  /**
+   * The serialized form to pass as a record input when calling
+   * `requestTransaction`. Either the plaintext string the wallet returned
+   * (e.g. `{owner: aleo1…, microcredits: 5u64.private, …}`) or, if the wallet
+   * returned a structured object, `JSON.stringify(object)`. Leo / Shield /
+   * Puzzle wallet adapters accept both shapes.
+   */
   ciphertext: string;
+  /** True when this record has already been consumed in a prior tx. */
+  spent: boolean;
 }
 
 export interface CreditsRecord extends ParsedRecord {
@@ -31,48 +40,80 @@ const CACHE_TTL_MS = 30_000; // 30 seconds
 /**
  * Scan wallet for records belonging to a specific program.
  * Uses the wallet adapter's requestRecords() method.
+ *
+ * Emits console diagnostics under the `[records]` prefix so the user can
+ * surface exactly what Shield/Leo/Puzzle returned when the pay flow trips
+ * "insufficient balance" — the remedy differs depending on whether the
+ * wallet returned nothing, returned encrypted ciphertexts, or returned
+ * plaintext records that are individually too small.
  */
 export async function getRecords(programId: string): Promise<ParsedRecord[]> {
   const cacheKey = programId;
   const now = Date.now();
 
-  // Return cached if fresh
   if (recordCache.has(cacheKey) && now - lastScanTime < CACHE_TTL_MS) {
     return recordCache.get(cacheKey)!;
   }
 
   const w = window as unknown as Record<string, unknown>;
-
-  // Try each wallet adapter
   const walletAPIs = [w.shield, w.leoWallet, w.puzzle, w.foxwallet].filter(Boolean);
 
   if (walletAPIs.length === 0) {
+    console.warn("[records] no wallet extension detected on window (shield|leoWallet|puzzle|foxwallet)");
     return [];
   }
 
   const wallet = walletAPIs[0] as Record<string, Function>;
+  const walletLabel = w.shield ? "shield" : w.leoWallet ? "leo" : w.puzzle ? "puzzle" : "fox";
 
   try {
-    // Standard Aleo wallet adapter interface
-    let rawRecords: string[];
+    // Canonical Aleo wallet adapter API: requestRecords(programId) or the
+    // newer requestRecordPlaintexts(programId). Both return { records: [...] }
+    // per the demox-labs adapter spec (see Alpaca's WalletServiceImpl.ts:188-196
+    // for the reference unwrap pattern).
+    const requestFn = (wallet.requestRecords || wallet.requestRecordPlaintexts || wallet.getRecords) as
+      | ((p: string) => Promise<unknown>)
+      | undefined;
 
-    if (wallet.requestRecords) {
-      rawRecords = await wallet.requestRecords(programId);
-    } else if (wallet.getRecords) {
-      rawRecords = await wallet.getRecords(programId);
-    } else {
+    if (!requestFn) {
+      console.warn(`[records] ${walletLabel} exposes none of: requestRecords, requestRecordPlaintexts, getRecords`);
       return [];
     }
 
+    const response = await requestFn.call(wallet, programId);
+
+    // Unwrap: the wallet may return either { records: [...] } (canonical) or
+    // a bare array (older adapter builds). Handle both.
+    let rawRecords: unknown[];
+    if (Array.isArray(response)) {
+      rawRecords = response;
+    } else if (response && typeof response === "object" && Array.isArray((response as { records?: unknown[] }).records)) {
+      rawRecords = (response as { records: unknown[] }).records;
+    } else {
+      console.warn(`[records] ${walletLabel} returned unexpected shape:`, response);
+      rawRecords = [];
+    }
+
+    console.log(`[records] ${walletLabel}.requestRecords("${programId}") returned ${rawRecords.length} record(s)`);
+    if (rawRecords.length > 0) {
+      // Log the first record's raw shape so the user can see what the wallet
+      // is actually handing us — string vs object, plaintext vs ciphertext.
+      const sample = rawRecords[0];
+      console.log(`[records] first record type: ${typeof sample}`, sample);
+    }
+
     const parsed = rawRecords
-      .map((raw: string) => parseRecordString(raw, programId))
+      .map((raw) => normalizeRecord(raw, programId))
       .filter((r): r is ParsedRecord => r !== null);
 
-    recordCache.set(cacheKey, parsed);
-    lastScanTime = now;
+    const unspent = parsed.filter((r) => !r.spent);
+    console.log(`[records] parsed ${parsed.length} record(s), ${unspent.length} unspent`);
 
-    return parsed;
-  } catch {
+    recordCache.set(cacheKey, unspent);
+    lastScanTime = now;
+    return unspent;
+  } catch (err) {
+    console.error(`[records] ${walletLabel} fetch failed:`, err);
     return [];
   }
 }
@@ -164,26 +205,61 @@ export function invalidateRecordCache() {
 }
 
 /**
- * Parse a record ciphertext string into structured data.
- * Handles both Leo-style and JSON-style record formats.
+ * Normalize whatever the wallet handed us into a `ParsedRecord`.
+ *
+ * Wallets return records in three observed shapes:
+ *   A. Structured object (canonical):
+ *        { id, owner, programId, spent, data: { microcredits: "5u64.private" }, … }
+ *      This is what `@demox-labs/aleo-wallet-adapter-*` returns, and what
+ *      Shield/Leo/Puzzle emit on the modern adapter API.
+ *   B. JSON-encoded string of shape A.
+ *   C. Aleo plaintext string:
+ *        "{owner: aleo1…, microcredits: 5u64.private, _nonce: …group.public}"
+ *
+ * The previous code only handled C, regex-parsed everything, and dropped A/B
+ * silently — which was the actual cause of "insufficient balance" despite a
+ * wallet holding private ALEO. Now we dispatch on runtime shape.
  */
-function parseRecordString(raw: string, programId: string): ParsedRecord | null {
-  try {
-    // Try JSON format first (some wallets return JSON)
-    if (raw.startsWith("{")) {
-      const parsed = JSON.parse(raw);
-      return {
-        id: parsed.id || parsed._nonce || "",
-        programId,
-        functionName: parsed.function || "",
-        owner: parsed.owner || "",
-        data: parsed.data || parsed,
-        nonce: parsed._nonce || parsed.nonce || "",
-        ciphertext: raw,
-      };
+function normalizeRecord(raw: unknown, programId: string): ParsedRecord | null {
+  // Shape A — structured object (canonical adapter return)
+  if (raw && typeof raw === "object") {
+    const r = raw as Record<string, unknown>;
+    const dataField = (r.data ?? {}) as Record<string, unknown>;
+    const data: Record<string, string> = {};
+    for (const [k, v] of Object.entries(dataField)) {
+      data[k] = typeof v === "string" ? v : String(v);
     }
+    const spent = r.spent === true || r.spent === "true";
+    return {
+      id: (r.id as string) || (r._nonce as string) || (dataField._nonce as string) || "",
+      programId: (r.programId as string) || programId,
+      functionName: (r.function as string) || "",
+      owner: (r.owner as string) || (dataField.owner as string) || "",
+      data,
+      nonce: (r._nonce as string) || (dataField._nonce as string) || "",
+      // Serialize the full object so `requestTransaction` can re-consume it.
+      // The Leo/Shield adapter accepts either a plaintext string or the JSON
+      // form of the structured record — JSON is the safe default.
+      ciphertext: JSON.stringify(raw),
+      spent,
+    };
+  }
 
-    // Leo record format: { owner: aleo1..., microcredits: 1000u64, ... }
+  // Shapes B and C require a string.
+  if (typeof raw !== "string") return null;
+
+  // Shape B — JSON-encoded record
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return normalizeRecord(parsed, programId);
+    }
+  } catch {
+    // Not JSON — fall through.
+  }
+
+  // Shape C — Aleo plaintext
+  try {
     const ownerMatch = raw.match(/owner:\s*(aleo1[a-z0-9]+)/);
     const nonceMatch = raw.match(/_nonce:\s*(\d+group\.public)/);
 
@@ -195,6 +271,8 @@ function parseRecordString(raw: string, programId: string): ParsedRecord | null 
       }
     }
 
+    if (!ownerMatch && Object.keys(data).length === 0) return null;
+
     return {
       id: nonceMatch?.[1] || Math.random().toString(36).slice(2),
       programId,
@@ -203,6 +281,7 @@ function parseRecordString(raw: string, programId: string): ParsedRecord | null 
       data,
       nonce: nonceMatch?.[1] || "",
       ciphertext: raw,
+      spent: false, // plaintext-string shape doesn't carry a spent flag
     };
   } catch {
     return null;
@@ -210,13 +289,23 @@ function parseRecordString(raw: string, programId: string): ParsedRecord | null 
 }
 
 /**
- * Parse a microcredits string value to BigInt.
- * Handles "1000u64", "1000", "1000field" formats.
+ * Parse an Aleo scalar literal into a BigInt of its numeric value.
+ *
+ * Handles any combination of: leading digits, an integer/field/group/scalar
+ * type suffix (e.g. `u64`, `i128`, `field`, `group`, `scalar`), and a
+ * visibility suffix (`.private`, `.public`, `.constant`). Whitespace and
+ * quotes are tolerated. Returns 0n if no digit prefix is present.
+ *
+ * Shield and Puzzle return plaintext records whose fields look like
+ * `microcredits: 5000000u64.private`. The old version only stripped `u\d+$`
+ * or `field$`, so `.private` tripped `BigInt(...)` and every record parsed
+ * to 0 — causing a spurious "Insufficient balance" for any private spend.
  */
 function parseMicrocredits(value: string): bigint {
-  const cleaned = value.replace(/u\d+$/, "").replace(/field$/, "").trim();
+  const match = value.trim().replace(/^"|"$/g, "").match(/^(\d+)/);
+  if (!match) return BigInt(0);
   try {
-    return BigInt(cleaned);
+    return BigInt(match[1]);
   } catch {
     return BigInt(0);
   }
