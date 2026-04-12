@@ -42,17 +42,29 @@ export default function AuditPage() {
   const { connected, address } = useWalletStore();
 
   // Compute real totals from invoices within the selected date range
-  const { realTotal, realCount } = useMemo(() => {
+  // Fix #6 — Audit proof integrity. Previously this counted every DB invoice
+  // in the date range, so a user could fabricate invoices locally and
+  // generate a "proof" of audited totals that never hit the chain. The audit
+  // is only meaningful for invoices that carry an on-chain tx hash
+  // (aleo_tx_id / txHash) proving they were committed. We filter those out
+  // here and expose the attested count so the UI can surface the integrity
+  // gap to the user before they generate a proof.
+  const { realTotal, realCount, unattestedCount } = useMemo(() => {
     const startDate = new Date(dateStart);
     const endDate = new Date(dateEnd);
     endDate.setHours(23, 59, 59, 999);
-    const filtered = allInvoices.filter((inv) => {
+    const inRange = allInvoices.filter((inv) => {
       const created = new Date(inv.createdAt);
       return created >= startDate && created <= endDate;
     });
+    const onChain = inRange.filter((inv) => {
+      const v = inv as Invoice & { txHash?: string | null; aleo_tx_id?: string | null };
+      return !!(v.txHash || v.aleo_tx_id);
+    });
     return {
-      realTotal: filtered.reduce((sum, inv) => sum + inv.amount, 0),
-      realCount: filtered.length,
+      realTotal: onChain.reduce((sum, inv) => sum + inv.amount, 0),
+      realCount: onChain.length,
+      unattestedCount: inRange.length - onChain.length,
     };
   }, [allInvoices, dateStart, dateEnd]);
 
@@ -66,6 +78,20 @@ export default function AuditPage() {
     // Step 1: Require wallet connection
     if (!connected || !address) {
       toast.error("Connect your wallet first to generate audit proofs.");
+      return;
+    }
+
+    // Integrity guard — refuse to generate a proof over zero on-chain data.
+    // Without this, a user could generate an "audit proof" for 0 invoices
+    // and the contract would accept it. We require at least one invoice
+    // with a real on-chain commitment in the date range.
+    if (realCount === 0) {
+      toast.error(
+        unattestedCount > 0
+          ? `${unattestedCount} invoice(s) in range but none have on-chain commitments. Create invoices on-chain first.`
+          : "No invoices found in this date range.",
+        { duration: 10000 },
+      );
       return;
     }
 
@@ -211,9 +237,37 @@ export default function AuditPage() {
               </div>
             </div>
 
+            {/* Integrity panel — audit proof is ONLY generated over invoices
+                with on-chain commitments. DB-only invoices are surfaced as
+                unattested so the auditor knows what's NOT covered by the proof. */}
+            <div className="border-2 border-black bg-white p-3 mb-3 font-mono text-[11px] space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-black/60 uppercase tracking-wider">
+                  On-chain invoices in range
+                </span>
+                <span className="text-black font-bold tabular-nums">{realCount}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-black/60 uppercase tracking-wider">
+                  Attested total (ALEO)
+                </span>
+                <span className="text-black font-bold tabular-nums">
+                  {(realTotal / 1_000_000).toFixed(2)}
+                </span>
+              </div>
+              {unattestedCount > 0 && (
+                <div className="flex items-center justify-between border-t-2 border-black/10 pt-1 mt-1">
+                  <span className="text-[#EF4444] uppercase tracking-wider font-bold">
+                    Unattested (DB only, excluded)
+                  </span>
+                  <span className="text-[#EF4444] font-bold tabular-nums">{unattestedCount}</span>
+                </div>
+              )}
+            </div>
+
             <button
               className="w-full bg-black text-[#C6F15C] border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-3 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-              disabled={generating || selected.length === 0}
+              disabled={generating || selected.length === 0 || realCount === 0}
               onClick={handleGenerate}
             >
               <Shield className="w-3.5 h-3.5" />

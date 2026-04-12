@@ -63,6 +63,54 @@ export default function ApprovalsPage() {
     async (approvalId: string, action: "approve" | "reject") => {
       setActioning(approvalId);
       try {
+        // Fix #3 — Threshold routing enforcement BEFORE any state change.
+        // If the company has committed amount-based approval tiers (stored
+        // in localStorage with a tx hash proving on-chain commit), the
+        // current approver must match the tier for this invoice's amount.
+        // Otherwise: block. An approver who shouldn't be authorizing an
+        // amount that high cannot bypass the rule by clicking the button.
+        if (action === "approve") {
+          try {
+            const raw = localStorage.getItem("stealthap.thresholds");
+            if (raw) {
+              const thresholds = JSON.parse(raw) as Array<{
+                tier: number;
+                minMicro: number;
+                maxMicro: number;
+                approver: string;
+                autoApprove: boolean;
+                txHash?: string;
+              }>;
+              const committed = thresholds.filter((r) => r.txHash);
+              if (committed.length > 0) {
+                const approval = approvals.find((a) => a.id === approvalId);
+                const amount = approval?.amount ?? 0;
+                const tier = committed.find((r) => amount >= r.minMicro && amount <= r.maxMicro);
+                if (!tier) {
+                  toast.error(
+                    `No approval tier covers ${(amount / 1_000_000).toFixed(2)} ALEO. Configure in Settings → Rules.`,
+                    { duration: 8000 },
+                  );
+                  return;
+                }
+                if (tier.autoApprove) {
+                  toast.info(`Tier ${tier.tier} auto-approves — this invoice is already authorized.`);
+                  return;
+                }
+                const { address } = useWalletStore.getState();
+                const expected = tier.approver.trim();
+                if (expected && expected.startsWith("aleo1") && address && address !== expected) {
+                  toast.error(
+                    `Tier ${tier.tier} (${(tier.minMicro / 1_000_000).toFixed(0)}–${(tier.maxMicro / 1_000_000).toFixed(0)} ALEO) is assigned to ${expected.slice(0, 10)}… — you are not authorized.`,
+                    { duration: 10000 },
+                  );
+                  return;
+                }
+              }
+            }
+          } catch { /* no committed thresholds — continue without enforcement */ }
+        }
+
         // Step 1 — DB write. Always happens, even if the on-chain commitment
         // below fails, so the audit trail reflects user intent.
         const res = await fetch("/api/approvals", {
