@@ -20,6 +20,7 @@ import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
 import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent, unmarkTentativelySpent } from "@/lib/aleo/records";
 import { getMappingValue, getTransaction } from "@/lib/aleo/client";
 import { generateNonce, nowTimestamp, hashToField } from "@/lib/crypto";
+import { recordSpend } from "@/lib/aleo/programs/workflow";
 import type { InvoiceRow as Invoice, CurrencyFlag } from "@/types";
 
 /** Parse a raw `credits.aleo::account` mapping string like `"52000000u64"` into microcredits. */
@@ -368,6 +369,48 @@ export function PaymentFlow({
 
       setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
       setProgress(70);
+
+      // Fix #2 — Record the spend against the category budget on-chain BEFORE
+      // the payment transition. If the category has a committed spending
+      // limit (stored in localStorage as stealthap.limits with a tx hash
+      // proving on-chain commit), call wf_v2::record_spend. The contract
+      // either decrements the budget or reverts if the limit would be
+      // exceeded. Either way, the pay transition that follows fails safely.
+      try {
+        const limitsRaw = localStorage.getItem("stealthap.limits");
+        if (limitsRaw) {
+          const limits = JSON.parse(limitsRaw) as Array<{ category: string; limitMicro: number; txHash?: string }>;
+          const firstInv = invoices[0] as Invoice & { gl_code?: string | null; category?: string | null };
+          const invoiceCategory = firstInv?.gl_code || firstInv?.category || "";
+          const matched = invoiceCategory
+            ? limits.find((l) => l.category.toLowerCase() === invoiceCategory.toLowerCase() && l.txHash)
+            : limits.find((l) => l.txHash); // fall through to first committed limit
+          if (matched) {
+            const { address } = useWalletStore.getState();
+            if (address) {
+              const companyHash = await hashToField(address);
+              const categoryHash = await hashToField(matched.category);
+              const spendRes = await recordSpend({
+                companyHash,
+                categoryHash,
+                amount: BigInt(totalMicro),
+                nonce: generateNonce(),
+              });
+              if (spendRes.status === "failed") {
+                toast.error(
+                  `Spending limit exceeded for "${matched.category}". ${spendRes.error ?? ""}`,
+                  { duration: 10000 },
+                );
+                bailToReview();
+                return;
+              }
+              toast.info(`Spend recorded against ${matched.category} budget`);
+            }
+          }
+        }
+      } catch {
+        // Local limits not configured — continue without budget enforcement
+      }
 
       // Compute a deterministic field value for invoice_id. The contract's
       // finalize block uses this as the mapping key for replay protection:

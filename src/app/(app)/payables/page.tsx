@@ -17,7 +17,7 @@ import { motion } from "framer-motion";
 import { Plus, Upload, Sparkles, Search, CheckCircle2, PenLine } from "lucide-react";
 import { SkeletonTable } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { createInvoiceOnChain } from "@/lib/aleo/programs/invoice";
+import { createInvoiceOnChain, generatePseudonym, checkDuplicateOnChain } from "@/lib/aleo/programs/invoice";
 import { useWalletStore } from "@/stores/wallet-store";
 import { hashToField, generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { Invoice } from "@/lib/types";
@@ -352,6 +352,42 @@ export default function PayablesPage() {
             ? selectedVendor.payment_address
             : "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
 
+        // Client-side allowlist enforcement (Fix #1). If the company has
+        // committed an approved-vendor list, the current vendor must be on
+        // it before we waste gas creating an on-chain invoice record. The
+        // corresponding on-chain ZK verify_vendor_allowlist call needs
+        // BHP256-compatible Merkle proofs (post-wave WASM work); for now
+        // the allowlist is enforced locally + the root is publicly committed
+        // on-chain, which is the shape most enterprise AP allowlists have.
+        try {
+          const raw = localStorage.getItem("stealthap.vendor_allowlist");
+          if (raw) {
+            const parsed = JSON.parse(raw) as { entries: Array<{ vendorHash: string; name: string }>; tx?: string };
+            if (parsed.tx && parsed.entries.length > 0) {
+              const onList = parsed.entries.some((e) => e.vendorHash === vendorHash);
+              if (!onList) {
+                toast.error(`${selectedVendor.name} is not on the committed vendor allowlist. Add them in Settings → Rules first.`);
+                return; // invoice already saved to DB; bail before on-chain
+              }
+            }
+          }
+        } catch { /* no allowlist configured — skip */ }
+
+        // On-chain duplicate check (Fix #5). Compute a content hash from
+        // invoice_number + vendor + amount so the same invoice cannot be
+        // re-committed on-chain even if somehow bypassed at the DB layer.
+        const contentHash = await hashToField(
+          `${extractedData.invoice_number || ""}:${selectedVendor.id}:${amountMicro}`,
+        );
+        try {
+          const dupeRes = await checkDuplicateOnChain(contentHash);
+          if (dupeRes.status === "failed") {
+            // Contract rejected → duplicate already on chain.
+            toast.error("Duplicate invoice detected on-chain — this content hash has been committed before.");
+            return;
+          }
+        } catch { /* network hiccup — proceed to create; create will still fail if truly duplicate */ }
+
         const txResult = await createInvoiceOnChain({
           companyHash,
           vendorHash,
@@ -379,6 +415,32 @@ export default function PayablesPage() {
             }),
           });
           toastSuccess("On-chain commitment", `TX: ${txResult.transactionId.slice(0, 16)}...`);
+
+          // Pseudonym generation on-chain (Fix #4). Call the contract so the
+          // pseudonym is a real field value derived from real_address +
+          // invoice_id + rotation_nonce, not a client-side hash. We store
+          // the tx hash on the invoice row as proof-of-generation.
+          try {
+            const invoiceIdField = await hashToField(
+              `${savedInvoice.data?.id ?? savedInvoice.id}:${extractedData.invoice_number || ""}`,
+            );
+            const rotationNonce = generateNonce();
+            const pseuRes = await generatePseudonym({
+              realAddress: address,
+              invoiceId: invoiceIdField,
+              rotationNonce,
+            });
+            if (pseuRes.transactionId) {
+              await fetch("/api/invoices", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  id: savedInvoice.data?.id ?? savedInvoice.id,
+                  invoice_hash: pseuRes.transactionId, // reuse invoice_hash column to track pseudonym tx
+                }),
+              });
+            }
+          } catch { /* pseudonym is a privacy add-on; don't block invoice on failure */ }
         }
       } catch {
         // On-chain failed — invoice is saved in DB, commitment pending
