@@ -481,6 +481,51 @@ export function PaymentFlow({
           ))}
         </div>
 
+        {/* Privacy Trail — surfaces the on-chain commitments this invoice has
+            already generated (inv_v2 create + wf_v2 approve_private). Payment
+            tx is the third step, about to happen. Makes the multi-contract
+            architecture visible to judges without any extra click. */}
+        <div className="border-2 border-black bg-white p-3 space-y-2">
+          <p className="font-mono text-[10px] font-bold uppercase tracking-wider text-black/60">
+            Privacy Trail (on-chain commitments)
+          </p>
+          {invoices.map((inv) => {
+            const invTx = (inv as Invoice & { txHash?: string }).txHash;
+            const approvals = (inv as Invoice & { approvals?: Array<{ aleo_tx_id?: string; status?: string }> }).approvals ?? [];
+            const approvalTx = approvals.find((a) => a.status === "approved")?.aleo_tx_id;
+            const explorer = (txHash: string) =>
+              `https://explorer.provable.com/v1/testnet/transaction/${txHash}`;
+            return (
+              <div key={inv.id} className="font-mono text-[10px] space-y-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-black/40 w-20">inv_v2:</span>
+                  {invTx ? (
+                    <a href={explorer(invTx)} target="_blank" rel="noreferrer" className="text-black underline hover:text-[#A259FF] truncate">
+                      {invTx.slice(0, 20)}…
+                    </a>
+                  ) : (
+                    <span className="text-black/30">pending commitment</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-black/40 w-20">wf_v2:</span>
+                  {approvalTx ? (
+                    <a href={explorer(approvalTx)} target="_blank" rel="noreferrer" className="text-black underline hover:text-[#A259FF] truncate">
+                      {approvalTx.slice(0, 20)}…
+                    </a>
+                  ) : (
+                    <span className="text-black/30">off-chain approval (no on-chain commitment)</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-black/40 w-20">pay_v2:</span>
+                  <span className="text-black/40 italic">about to commit…</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         {/* Token — ALEO only for now */}
         <div>
           <label className="block text-sm font-medium text-text-2 mb-2">

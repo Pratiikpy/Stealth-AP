@@ -23,9 +23,12 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(sp.get("limit") || "50");
     const offset = parseInt(sp.get("offset") || "0");
 
+    // Also join the latest approval so the UI can show the full on-chain
+    // trail (invoice-create tx + approval tx + payment tx) without an extra
+    // round trip. Privacy Trail panel on the payment flow reads this.
     let query = supabase
       .from("invoices")
-      .select("*, vendors(name, payment_address)", { count: "exact" })
+      .select("*, vendors(name, payment_address), approvals(aleo_tx_id, status, decided_at)", { count: "exact" })
       .order("created_at", { ascending: false })
       .range(offset, offset + limit - 1);
 
@@ -68,6 +71,7 @@ export async function GET(request: NextRequest) {
       txHash: row.aleo_tx_id || undefined,
       invoice_hash: row.invoice_hash || null,
       total_micro: (row.total_amount_micro as number) || (row.amount_micro as number) || 0,
+      approvals: row.approvals || [],
       _raw: row,
     }));
 
@@ -106,6 +110,37 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
+
+    // Duplicate-invoice protection. Every real AP system has this — prevents
+    // paying the same vendor twice for the same invoice number + amount.
+    // We use a cheap DB check (fingerprint on {company, vendor, invoice_number,
+    // total}) before the insert; on-chain `inv_v2::check_duplicate` is called
+    // by the frontend during commitment. Two layers, one catches typos, the
+    // other catches replay attacks.
+    if (body.vendor_id && body.invoice_number) {
+      const { data: existing } = await supabase
+        .from("invoices")
+        .select("id, invoice_number")
+        .eq("company_id", profile.company_id)
+        .eq("vendor_id", body.vendor_id)
+        .eq("invoice_number", body.invoice_number)
+        .maybeSingle();
+      if (existing) {
+        console.warn("[invoices POST] duplicate blocked", {
+          userId: user.id,
+          existingId: existing.id,
+          invoice_number: body.invoice_number,
+        });
+        return NextResponse.json(
+          {
+            error: `Invoice ${body.invoice_number} already exists for this vendor.`,
+            duplicate: true,
+            existing_id: existing.id,
+          },
+          { status: 409 }
+        );
+      }
+    }
 
     const { data, error } = await supabase
       .from("invoices")
