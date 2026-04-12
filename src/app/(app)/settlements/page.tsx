@@ -14,10 +14,14 @@ import { MoneyDisplay } from "@/components/ui/money-display";
 import { SlidePanel } from "@/components/ui/slide-panel";
 import { PaymentFlow } from "@/components/payments/payment-flow";
 import { motion } from "framer-motion";
-import { CreditCard, Clock, ShieldCheck, Plus } from "lucide-react";
+import { CreditCard, Clock, ShieldCheck, Plus, Layers, CheckSquare, Square } from "lucide-react";
 import { SkeletonTable, SkeletonCards } from "@/components/ui/skeleton";
 import type { Payment, Invoice } from "@/lib/types";
 import type { InvoiceRow } from "@/types";
+import { useWalletStore } from "@/stores/wallet-store";
+import { openEpoch, commitPayment, closeEpoch } from "@/lib/aleo/programs/batch";
+import { hashToField, generateNonce } from "@/lib/crypto";
+import { toast } from "sonner";
 
 const paymentColumns: Column<Payment>[] = [
   {
@@ -87,6 +91,91 @@ export default function SettlementsPage() {
   const [showPayment, setShowPayment] = useState(false);
   const [showInvoiceSelect, setShowInvoiceSelect] = useState(false);
   const [selectedInvoices, setSelectedInvoices] = useState<InvoiceRow[]>([]);
+
+  // Batch settlement state — when batchMode is true, the invoice selector
+  // shows checkboxes and the bottom CTA fires bat_v2 epoch flow.
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSelected, setBatchSelected] = useState<Set<string>>(new Set());
+  const [batchProgress, setBatchProgress] = useState<string>("");
+  const [batchTxs, setBatchTxs] = useState<Array<{ label: string; hash: string }>>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  async function handleBatchSettle() {
+    const wallet = useWalletStore.getState();
+    if (!wallet.connected || !wallet.address) {
+      toast.error("Connect your wallet first");
+      return;
+    }
+    if (batchSelected.size < 2) {
+      toast.error("Select at least 2 invoices for batch settlement");
+      return;
+    }
+    const picks = approvedInvoices.filter((inv) => batchSelected.has(inv.id));
+    setBatchRunning(true);
+    setBatchProgress("Opening settlement epoch…");
+    setBatchTxs([]);
+
+    try {
+      const companyHash = await hashToField(wallet.address);
+      const epochNumber = BigInt(Date.now()); // epoch keyed by submission time
+      const epochIdField = await hashToField(`epoch:${wallet.address}:${epochNumber.toString()}`);
+
+      // Step 1 — open epoch (1 signature)
+      const openRes = await openEpoch(companyHash, epochNumber);
+      if (!openRes.transactionId) throw new Error(openRes.error || "open_epoch failed");
+      setBatchTxs((x) => [...x, { label: "open_epoch", hash: openRes.transactionId! }]);
+
+      // Step 2 — commit each invoice to a slot (N signatures)
+      for (let i = 0; i < picks.length; i++) {
+        const inv = picks[i];
+        const apiInv = inv as Invoice & {
+          vendor_name?: string;
+          invoice_number?: string;
+          total_amount_micro?: number;
+          amount_micro?: number;
+          vendors?: { payment_address?: string; name?: string };
+        };
+        const vendorName = apiInv.vendors?.name || apiInv.vendor_name || inv.vendorName || "vendor";
+        setBatchProgress(`Committing slot ${i + 1} of ${picks.length} (${vendorName})…`);
+        const payee = apiInv.vendors?.payment_address || "";
+        if (!payee.startsWith("aleo1")) {
+          throw new Error(`${vendorName} has no payment address; skip or fill in first.`);
+        }
+        const total = apiInv.total_amount_micro ?? apiInv.amount_micro ?? inv.amount ?? 0;
+        const invoiceIdField = await hashToField(`${inv.id}:${apiInv.invoice_number || ""}`);
+        const res = await commitPayment({
+          epochId: epochIdField,
+          slot: i,
+          invoiceId: invoiceIdField,
+          payee,
+          amount: BigInt(total),
+          token: 0, // ALEO
+          nonce: generateNonce(),
+        });
+        if (!res.transactionId) throw new Error(res.error || `commit_payment slot ${i} failed`);
+        setBatchTxs((x) => [...x, { label: `commit_payment · slot ${i}`, hash: res.transactionId! }]);
+      }
+
+      // Step 3 — close epoch (1 signature)
+      setBatchProgress("Closing epoch…");
+      const closeRes = await closeEpoch(companyHash, epochNumber);
+      if (!closeRes.transactionId) throw new Error(closeRes.error || "close_epoch failed");
+      setBatchTxs((x) => [...x, { label: "close_epoch", hash: closeRes.transactionId! }]);
+
+      setBatchProgress(`Batch settled · ${picks.length} invoices committed in epoch`);
+      toastSuccess(
+        "Batch settlement complete",
+        `${picks.length} invoices committed across ${picks.length + 2} transitions`,
+      );
+      refreshInvoices();
+      refreshPayments();
+    } catch (err) {
+      setBatchProgress(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+      toastError("Batch settlement failed", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBatchRunning(false);
+    }
+  }
 
   // The API attaches the joined `vendors` row on `_raw`. Use it to find
   // each invoice's payee address for filtering/payment.
@@ -282,16 +371,35 @@ export default function SettlementsPage() {
         </div>
       )}
 
-      {/* Invoice selection panel */}
+      {/* Invoice selection panel — dual mode: single-pay or batch-settle */}
       <SlidePanel
         open={showInvoiceSelect}
-        onClose={() => setShowInvoiceSelect(false)}
-        title="Select Invoice to Pay"
+        onClose={() => { setShowInvoiceSelect(false); setBatchMode(false); setBatchSelected(new Set()); setBatchTxs([]); setBatchProgress(""); }}
+        title={batchMode ? "Batch Settlement" : "Select Invoice to Pay"}
       >
         <div className="space-y-3">
-          <p className="text-[13px] font-mono text-black/70">
-            Select an approved invoice to settle on-chain.
+          {/* Mode toggle */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => { setBatchMode(false); setBatchSelected(new Set()); }}
+              className={`flex-1 border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider py-2 transition-all ${!batchMode ? "bg-[#C6F15C] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]" : "bg-white text-black/60"}`}
+            >
+              Single Pay
+            </button>
+            <button
+              onClick={() => setBatchMode(true)}
+              className={`flex-1 border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider py-2 transition-all flex items-center justify-center gap-1 ${batchMode ? "bg-[#B3A0FF] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]" : "bg-white text-black/60"}`}
+            >
+              <Layers size={12} />
+              Batch Settle
+            </button>
+          </div>
+          <p className="text-[12px] font-mono text-black/70">
+            {batchMode
+              ? "Select 2+ invoices to commit as a single private batch epoch (bat_v2). Individual amounts + vendors stay invisible; only the aggregate root reaches chain."
+              : "Select an approved invoice to settle privately on-chain."}
           </p>
+
           {approvedInvoices.length === 0 ? (
             <p className="py-8 font-mono text-[13px] text-black/40 text-center uppercase">
               No approved invoices ready for payment
@@ -310,6 +418,41 @@ export default function SettlementsPage() {
                 const amount = apiInv.total_amount_micro ?? apiInv.amount_micro ?? inv.amount ?? 0;
                 const dueDate = apiInv.due_date || inv.dueDate || "";
                 const invoiceNumber = apiInv.invoice_number || inv.id;
+                const isSelected = batchSelected.has(inv.id);
+
+                if (batchMode) {
+                  return (
+                    <button
+                      key={inv.id}
+                      onClick={() => {
+                        setBatchSelected((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(inv.id)) next.delete(inv.id);
+                          else next.add(inv.id);
+                          return next;
+                        });
+                      }}
+                      className={`w-full text-left border-2 border-black p-4 transition-all flex items-start gap-3 ${
+                        isSelected ? "bg-[#B3A0FF]/30 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]" : "bg-white"
+                      }`}
+                    >
+                      {isSelected ? <CheckSquare size={18} className="text-black mt-0.5" /> : <Square size={18} className="text-black/40 mt-0.5" />}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="font-mono text-[13px] font-bold text-black">{vendorName}</span>
+                          <span className="font-mono text-[14px] font-black text-black tabular-nums">
+                            {formatMicro(amount)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[11px] text-black/50">{invoiceNumber}</span>
+                          {dueDate && <span className="font-mono text-[11px] text-black/40">Due {formatDate(dueDate)}</span>}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                }
+
                 return (
                   <button
                     key={inv.id}
@@ -331,6 +474,64 @@ export default function SettlementsPage() {
                   </button>
                 );
               })}
+            </div>
+          )}
+
+          {/* Batch CTA + progress */}
+          {batchMode && (
+            <div className="border-2 border-black bg-black text-white p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[11px] font-bold uppercase tracking-wider text-[#B3A0FF]">
+                  Selected: {batchSelected.size}
+                </span>
+                <span className="font-mono text-[13px] font-black text-[#C6F15C] tabular-nums">
+                  Total:{" "}
+                  {formatMicro(
+                    approvedInvoices
+                      .filter((i) => batchSelected.has(i.id))
+                      .reduce((s, i) => {
+                        const a = i as Invoice & { total_amount_micro?: number; amount_micro?: number };
+                        return s + (a.total_amount_micro ?? a.amount_micro ?? i.amount ?? 0);
+                      }, 0)
+                  )}
+                </span>
+              </div>
+
+              {batchTxs.length > 0 && (
+                <div className="border-2 border-white/20 p-2 space-y-1 font-mono text-[10px]">
+                  {batchTxs.map((t, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="text-white/50 w-32 shrink-0">{t.label}:</span>
+                      <a
+                        href={`https://explorer.provable.com/v1/testnet/transaction/${t.hash}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[#C6F15C] underline truncate"
+                      >
+                        {t.hash.slice(0, 20)}…
+                      </a>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {batchProgress && (
+                <p className="font-mono text-[10px] text-white/60 italic">{batchProgress}</p>
+              )}
+
+              <button
+                onClick={handleBatchSettle}
+                disabled={batchRunning || batchSelected.size < 2}
+                className="w-full bg-[#B3A0FF] text-black border-2 border-black font-mono uppercase font-bold tracking-wider py-2.5 text-sm shadow-[3px_3px_0px_0px_rgba(255,255,255,0.3)] hover:translate-x-[1px] hover:translate-y-[1px] disabled:opacity-40 transition-all flex items-center justify-center gap-2"
+              >
+                <Layers size={14} />
+                {batchRunning ? "Settling epoch…" : `Settle ${batchSelected.size} invoices privately`}
+              </button>
+
+              <p className="font-mono text-[9px] text-white/40">
+                Note: one wallet signature per transition (open_epoch + 1 per invoice + close_epoch).
+                True single-sig atomic batching requires contract-level aggregation — roadmap item.
+              </p>
             </div>
           )}
         </div>
