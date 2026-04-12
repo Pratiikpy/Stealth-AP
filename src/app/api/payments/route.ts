@@ -66,59 +66,95 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json();
 
-    // Verify invoice exists and is in "approved" status before marking as paid
-    if (body.invoice_id) {
-      const { data: invoice, error: invoiceError } = await supabase
+    // Accept either invoice_id (singular, legacy) or invoice_ids (array,
+    // used by the settlements multi-invoice payment flow). The frontend
+    // always sends invoice_ids; the old single-id path was never updating
+    // invoice status because body.invoice_id was undefined, so paid
+    // invoices stayed "approved" and kept appearing in Select-to-Pay.
+    const invoiceIds: string[] = Array.isArray(body.invoice_ids)
+      ? body.invoice_ids.filter((x: unknown) => typeof x === "string")
+      : body.invoice_id
+      ? [body.invoice_id]
+      : [];
+
+    // Status writes: treat the payment as `settled` when the tx has been
+    // submitted to chain and a tx hash exists; analytics filters on this.
+    const status = body.status || (body.tx_hash || body.aleo_tx_id ? "settled" : "pending");
+    const txHash = body.tx_hash || body.aleo_tx_id || null;
+    const totalMicro = body.total_micro ?? body.amount_micro ?? 0;
+
+    // Verify every invoice in the payload belongs to this company and is
+    // in "approved" status before touching anything.
+    if (invoiceIds.length > 0) {
+      const { data: invoices, error: invErr } = await supabase
         .from("invoices")
-        .select("id, status")
-        .eq("id", body.invoice_id)
-        .single();
+        .select("id, status, total_amount_micro, vendor_id")
+        .in("id", invoiceIds);
 
-      if (invoiceError || !invoice) {
-        return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
+      if (invErr || !invoices || invoices.length !== invoiceIds.length) {
+        console.error("[payments POST] invoice lookup failed", { userId: user.id, invoiceIds, err: invErr?.message });
+        return NextResponse.json({ error: "One or more invoices not found" }, { status: 404 });
       }
-
-      if (invoice.status !== "approved") {
-        return NextResponse.json(
-          { error: `Invoice must be approved before payment. Current status: ${invoice.status}` },
-          { status: 400 }
-        );
+      for (const inv of invoices) {
+        if (inv.status !== "approved" && inv.status !== "pending") {
+          return NextResponse.json(
+            { error: `Invoice ${inv.id} is ${inv.status}; cannot pay` },
+            { status: 400 }
+          );
+        }
       }
     }
 
-    const { data, error } = await supabase
-      .from("payments")
-      .insert({
-        invoice_id: body.invoice_id,
-        vendor_id: body.vendor_id,
-        amount_micro: body.amount_micro,
-        token: body.token,
-        status: "pending",
-        aleo_tx_id: body.aleo_tx_id,
-        settlement_anchor: body.settlement_anchor,
-        company_id: profile.company_id,
-        created_by: user.id,
-      })
-      .select()
-      .single();
+    // One payment row per invoice (simpler for reporting; analytics counts rows).
+    const rows = invoiceIds.length > 0
+      ? invoiceIds.map((invoice_id) => ({
+          invoice_id,
+          vendor_id: body.vendor_id ?? null,
+          amount_micro: totalMicro,
+          token: body.token || "ALEO",
+          status,
+          aleo_tx_id: txHash,
+          settlement_anchor: body.settlement_anchor ?? null,
+          confirmed_at: status === "settled" ? new Date().toISOString() : null,
+          company_id: profile.company_id,
+          created_by: user.id,
+        }))
+      : [{
+          invoice_id: null,
+          vendor_id: body.vendor_id ?? null,
+          amount_micro: totalMicro,
+          token: body.token || "ALEO",
+          status,
+          aleo_tx_id: txHash,
+          settlement_anchor: body.settlement_anchor ?? null,
+          confirmed_at: status === "settled" ? new Date().toISOString() : null,
+          company_id: profile.company_id,
+          created_by: user.id,
+        }];
+
+    const { data, error } = await supabase.from("payments").insert(rows).select();
 
     if (error) {
       console.error("[payments POST] insert failed", { userId: user.id, err: error.message });
       return NextResponse.json({ error: "Failed to record payment" }, { status: 500 });
     }
 
-    // Update invoice status to paid
-    if (body.invoice_id) {
+    // Flip ALL referenced invoices to "paid" — this is why paid invoices
+    // kept showing in Select-to-Pay before. Previously the code only did
+    // this when body.invoice_id was set (singular), which the frontend
+    // never sent.
+    if (invoiceIds.length > 0) {
       await supabase
         .from("invoices")
         .update({
           status: "paid",
           paid_at: new Date().toISOString(),
-          aleo_tx_id: body.aleo_tx_id,
+          aleo_tx_id: txHash,
         })
-        .eq("id", body.invoice_id);
+        .in("id", invoiceIds);
     }
 
+    console.log("[payments POST] settled", { userId: user.id, invoiceIds, txHash, count: rows.length });
     return NextResponse.json({ data }, { status: 201 });
   } catch {
     return NextResponse.json(

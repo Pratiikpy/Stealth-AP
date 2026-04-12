@@ -38,7 +38,11 @@ export function useData<T>(
     setError(null);
 
     try {
-      const res = await fetch(apiPath);
+      // cache: "no-store" prevents the browser from serving a stale
+      // response after we mutate server-side state (e.g. after saving a
+      // vendor address, we refetch invoices — without this, the refetch
+      // could hit the browser cache and return the pre-save join).
+      const res = await fetch(apiPath, { cache: "no-store" });
 
       if (!res.ok) {
         throw new Error(`API error: ${res.status}`);

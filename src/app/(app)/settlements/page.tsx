@@ -174,6 +174,7 @@ export default function SettlementsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           invoice_ids: invoices.map((inv) => inv.id),
+          vendor_id: invoices[0]?.vendor_id ?? null,
           total_micro: invoices.reduce((sum, inv) => sum + inv.total_micro, 0),
           token: "ALEO",
           tx_hash: txId ?? null,
@@ -184,7 +185,10 @@ export default function SettlementsPage() {
     } catch {
       toastError("Failed to save payment", "The on-chain payment succeeded but the DB record was not saved. Please contact support.");
     }
+    // Refresh BOTH lists — payments for the history table, invoices so the
+    // just-paid invoice drops out of the "Select Invoice to Pay" selector.
     refreshPayments();
+    refreshInvoices();
     setShowPayment(false);
   }
 

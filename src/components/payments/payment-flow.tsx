@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Shield,
   Check,
@@ -76,6 +76,33 @@ export function PaymentFlow({
     firstInv?.payment_address ||
     null;
   const needsAddress = !existingAddress || !existingAddress.startsWith("aleo1");
+
+  // Source-of-truth fallback: when the panel opens, fetch the vendor row
+  // directly from /api/vendors. The invoice.vendors join read can lag
+  // behind DB state if useData's cache didn't refresh, so relying solely
+  // on the joined field causes the "enter address every time" complaint.
+  // This read is cheap (one row) and always returns the current value.
+  useEffect(() => {
+    if (resolvedAddress) return; // panel session already set one
+    if (!firstInv?.vendor_id) return;
+    if (existingAddress && existingAddress.startsWith("aleo1")) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/vendors`, { cache: "no-store" });
+        if (!res.ok) return;
+        const json = await res.json();
+        const vendors = (json.data || []) as Array<{ id: string; payment_address?: string; name?: string }>;
+        const match = vendors.find((v) => v.id === firstInv.vendor_id);
+        if (!cancelled && match?.payment_address && match.payment_address.startsWith("aleo1")) {
+          setResolvedAddress(match.payment_address);
+        }
+      } catch {
+        // fetch failure here is non-fatal — the UI input prompt still works
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [firstInv?.vendor_id, resolvedAddress, existingAddress]);
 
   async function saveVendorAddress() {
     const addr = addressInput.trim();

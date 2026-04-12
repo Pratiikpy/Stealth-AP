@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createServerSupabase } from "@/lib/supabase/server";
 
 export async function GET() {
+  const startedAt = Date.now();
   try {
     const supabase = await createServerSupabase();
 
@@ -14,11 +15,13 @@ export async function GET() {
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(now.getMonth() - 6);
 
-    // Fetch completed payments for analytics
+    // Fetch settled/completed payments for analytics. Earlier this only
+    // matched "completed" but the pay flow writes "settled" when a tx hash
+    // exists — so every successful payment was invisible to analytics.
     const { data: payments } = await supabase
       .from("payments")
       .select("amount_micro, token, confirmed_at, settlement_time_s, gas_fee_micro, vendors(name, category)")
-      .eq("status", "completed")
+      .in("status", ["completed", "settled"])
       .gte("confirmed_at", sixMonthsAgo.toISOString());
 
     // Fetch outstanding invoices for aging
@@ -75,6 +78,13 @@ export async function GET() {
     const activeVendors = Object.keys(byVendorMap).length;
     const avgInvoice = paymentCount > 0 ? Math.round(totalPaid / paymentCount) : 0;
 
+    console.log("[analytics GET]", {
+      userId: user.id,
+      paymentCount,
+      totalPaid,
+      activeVendors,
+      ms: Date.now() - startedAt,
+    });
     return NextResponse.json({
       totalPaid,
       paymentCount,
@@ -91,7 +101,11 @@ export async function GET() {
       byMonth: Object.entries(byMonth).map(([month, amount_micro]) => ({ month, amount_micro })),
       aging,
     });
-  } catch {
+  } catch (err) {
+    console.error("[analytics GET] failed", {
+      ms: Date.now() - startedAt,
+      err: err instanceof Error ? err.message : err,
+    });
     return NextResponse.json({ error: "Failed to fetch analytics" }, { status: 500 });
   }
 }
