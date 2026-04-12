@@ -134,10 +134,16 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
 
     console.log(`[records] ${walletLabel}.requestRecords("${programId}") returned ${rawRecords.length} record(s)`);
     if (rawRecords.length > 0) {
-      // Log the first record's raw shape so the user can see what the wallet
-      // is actually handing us — string vs object, plaintext vs ciphertext.
       const sample = rawRecords[0];
       console.log(`[records] first record type: ${typeof sample}`, sample);
+      // Also log the JSON dump — Chrome's object preview collapses to
+      // "Object" which hides the actual field names and the plaintext
+      // visibility suffixes. Stringified output is ground truth.
+      try {
+        console.log(`[records] first record JSON: ${JSON.stringify(sample, null, 2).slice(0, 800)}`);
+      } catch {
+        console.log("[records] first record could not be stringified (cyclic?)");
+      }
     }
 
     const parsed = rawRecords
@@ -380,21 +386,26 @@ function normalizeRecord(raw: unknown, programId: string): ParsedRecord | null {
 /**
  * Parse an Aleo scalar literal into a BigInt of its numeric value.
  *
- * Handles any combination of: leading digits, an integer/field/group/scalar
- * type suffix (e.g. `u64`, `i128`, `field`, `group`, `scalar`), and a
- * visibility suffix (`.private`, `.public`, `.constant`). Whitespace and
- * quotes are tolerated. Returns 0n if no digit prefix is present.
+ * Accepts any combination of:
+ *   - leading digits, OPTIONALLY WITH UNDERSCORE SEPARATORS (e.g. `12_000_000`)
+ *   - type suffix (`u64`, `i128`, `field`, `group`, `scalar`)
+ *   - visibility suffix (`.private`, `.public`, `.constant`)
+ *   - surrounding whitespace / quotes
  *
- * Shield and Puzzle return plaintext records whose fields look like
- * `microcredits: 5000000u64.private`. The old version only stripped `u\d+$`
- * or `field$`, so `.private` tripped `BigInt(...)` and every record parsed
- * to 0 — causing a spurious "Insufficient balance" for any private spend.
+ * Aleo plaintext syntax permits underscores as digit separators — Shield and
+ * Puzzle both render records this way (e.g. `microcredits: 12_000_000u64
+ * .private`). An earlier version of this parser used `\d+` which stopped at
+ * the first `_` and read `12_000_000` as `12`, causing every large record
+ * to look like 12 microcredits and the flow to fall into the shield branch
+ * despite ample private balance. Now uses `[\d_]+` and strips separators.
  */
 function parseMicrocredits(value: string): bigint {
-  const match = value.trim().replace(/^"|"$/g, "").match(/^(\d+)/);
+  const match = value.trim().replace(/^"|"$/g, "").match(/^([\d_]+)/);
   if (!match) return BigInt(0);
+  const cleaned = match[1].replace(/_/g, "");
+  if (!cleaned) return BigInt(0);
   try {
-    return BigInt(match[1]);
+    return BigInt(cleaned);
   } catch {
     return BigInt(0);
   }
