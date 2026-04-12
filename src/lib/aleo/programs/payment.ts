@@ -42,6 +42,7 @@ export async function payVerifiedCredits(params: {
   invoiceId: string;
   invoiceHash: string;
   amount: bigint;
+  invoiceAmount: bigint;
   paidAt: number;
   nonce: string;
 }) {
@@ -54,6 +55,7 @@ export async function payVerifiedCredits(params: {
       `${params.invoiceId}field`,
       `${params.invoiceHash}field`,
       `${params.amount}u64`,
+      `${params.invoiceAmount}u64`,
       `${params.paidAt}u32`,
       `${params.nonce}field`,
     ],
@@ -146,56 +148,6 @@ export async function executeScheduledPayment(params: {
       params.payee,
       `${params.invoiceId}field`,
       `${params.amount}u64`,
-      `${params.nonce}field`,
-    ],
-  });
-}
-
-/**
- * Pay with USDCx stablecoin (private)
- */
-export async function payUsdcxPrivate(params: {
-  tokenRecord: string;
-  payee: string;
-  invoiceId: string;
-  amount: bigint;
-  paidAt: number;
-  nonce: string;
-}) {
-  return executeTransaction({
-    programId: PROGRAM_ID,
-    functionName: "pay_usdcx_private",
-    inputs: [
-      params.tokenRecord,
-      params.payee,
-      `${params.invoiceId}field`,
-      `${params.amount}u64`,
-      `${params.paidAt}u32`,
-      `${params.nonce}field`,
-    ],
-  });
-}
-
-/**
- * Pay with USAD stablecoin (private)
- */
-export async function payUsadPrivate(params: {
-  tokenRecord: string;
-  payee: string;
-  invoiceId: string;
-  amount: bigint;
-  paidAt: number;
-  nonce: string;
-}) {
-  return executeTransaction({
-    programId: PROGRAM_ID,
-    functionName: "pay_usad_private",
-    inputs: [
-      params.tokenRecord,
-      params.payee,
-      `${params.invoiceId}field`,
-      `${params.amount}u64`,
-      `${params.paidAt}u32`,
       `${params.nonce}field`,
     ],
   });

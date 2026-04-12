@@ -44,6 +44,8 @@ export function PaymentFlow({
   const [addressInput, setAddressInput] = useState("");
   const [savingAddress, setSavingAddress] = useState(false);
   const [resolvedAddress, setResolvedAddress] = useState<string | null>(null);
+  const [needsShield, setNeedsShield] = useState(false);
+  const [shieldingProgress, setShieldingProgress] = useState(false);
   const { connected, privateKey } = useWalletStore();
   const isBurnerWallet = !!privateKey;
 
@@ -126,16 +128,53 @@ export function PaymentFlow({
         payRecordCiphertext = "";
       } else {
         // Extension wallet — scan wallet for records
-        setProofChecklist(["Scanning wallet for records"]);
+        setProofChecklist(["Scanning wallet for private records"]);
         setProgress(15);
         const creditsRecords = await getCreditsRecords();
         const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
+
         if (!payRecord) {
-          toast.error(
-            `No credits record with ${formatMicro(totalMicro)} ALEO. Your balance may be in smaller records. Try a smaller payment or consolidate.`
-          );
-          setStep("review");
-          return;
+          // Check if user has public balance to shield
+          const { balance } = useWalletStore.getState();
+          const publicBalance = balance?.aleo || 0;
+
+          if (publicBalance >= totalMicro) {
+            // Offer shield flow
+            toast.info("Public balance detected. Converting to private record...");
+
+            // Call credits.aleo::transfer_public_to_private
+            const { address } = useWalletStore.getState();
+            if (!address) {
+              toast.error("Wallet address unavailable");
+              setStep("review");
+              return;
+            }
+
+            const shieldResult = await aleoTx.execute(
+              "credits.aleo",
+              "transfer_public_to_private",
+              [address, `${totalMicro}u64`],
+              { successMessage: "Funds shielded — now retry payment" }
+            );
+
+            if (shieldResult.status === "failed") {
+              toast.error(shieldResult.error || "Failed to shield funds");
+              setStep("review");
+              return;
+            }
+
+            // Invalidate cache and retry record fetch
+            invalidateRecordCache();
+            toast.success("Funds shielded. Retrying payment...");
+            // After shield, the user needs to retry — record propagation takes time
+            toast.info("Wait ~2 min then click Pay again");
+            setStep("review");
+            return;
+          } else {
+            toast.error(`Insufficient balance. Need ${formatMicro(totalMicro)} ALEO.`);
+            setStep("review");
+            return;
+          }
         }
         payRecordCiphertext = payRecord.ciphertext;
         setProofChecklist((prev) => [...prev, "Credits record found"]);

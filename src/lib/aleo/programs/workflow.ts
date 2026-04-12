@@ -28,7 +28,7 @@ export async function setThreshold(params: {
       `${params.minAmount}u64`,
       `${params.maxAmount}u64`,
       params.approver,
-      `${params.autoApprove}`,
+      params.autoApprove ? "true" : "false",
     ],
   });
 }
