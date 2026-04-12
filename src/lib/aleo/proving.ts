@@ -48,42 +48,31 @@ export async function executeViaWallet(
   }
 
   const wallet = walletAPIs[0] as Record<string, unknown>;
-  const { address } = useWalletStore.getState();
-  const network = process.env.NEXT_PUBLIC_ALEO_NETWORK || "testnet";
-  // Aleo chain IDs — see @demox-labs/aleo-wallet-adapter-base source.
-  // testnet: "aleo:1", mainnet: "aleo:0", testnetBeta: "aleo:1".
-  const chainId = network === "mainnet" ? "aleo:0" : "aleo:1";
 
   try {
-    // Canonical @demox-labs adapter API: requestTransaction({address, chainId,
-    // transitions: [{program, functionName, inputs}], fee, feePrivate}).
-    // Previously we built a Shield-specific flat payload with programName +
-    // privateFee — Shield doesn't accept that shape and the call silently
-    // hung. See Alpaca's WalletServiceImpl.ts:517-537 for the working shape.
-    const execFn = (wallet.requestTransaction || wallet.executeTransaction) as Function | undefined;
+    // Shield/Puzzle expect the @provablehq/aleo-wallet-adaptor-react
+    // TransactionOptions shape: {program, function, inputs, fee, privateFee}.
+    // This differs from the @demox-labs/aleo-wallet-adapter-leo shape
+    // ({transitions:[...], feePrivate}) — sending the demox-labs shape to
+    // Shield produces "Invalid transaction payload" from injector.js. The
+    // reference is NullPay's usePayment.ts:163-169 (working in production
+    // against Shield).
+    const execFn = (wallet.executeTransaction || wallet.requestTransaction) as Function | undefined;
     if (!execFn) {
-      return { transactionId: null, status: "failed", error: "Wallet does not support requestTransaction" };
+      return { transactionId: null, status: "failed", error: "Wallet does not support executeTransaction" };
     }
 
     const txPayload = {
-      address: address || "",
-      chainId,
-      transitions: [
-        {
-          program: request.programId,
-          functionName: request.functionName,
-          inputs: request.inputs,
-        },
-      ],
-      // Alpaca uses 250_000 as the default priority fee on testnet. 10k
-      // silently rejects below the minimum.
+      program: request.programId,
+      function: request.functionName,
+      inputs: request.inputs,
       fee: request.fee ?? 250_000,
-      feePrivate: false,
+      privateFee: false,
     };
 
-    console.log("[proving] requestTransaction payload", txPayload);
+    console.log("[proving] executeTransaction payload", txPayload);
     const result = await execFn.call(wallet, txPayload);
-    console.log("[proving] requestTransaction result", result);
+    console.log("[proving] executeTransaction result", result);
 
     // Wallet returns a transactionId (string) or { transactionId } depending
     // on the adapter version — normalize.

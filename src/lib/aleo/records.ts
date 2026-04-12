@@ -230,17 +230,37 @@ function normalizeRecord(raw: unknown, programId: string): ParsedRecord | null {
       data[k] = typeof v === "string" ? v : String(v);
     }
     const spent = r.spent === true || r.spent === "true";
+    const owner = (r.owner as string) || (dataField.owner as string) || "";
+    const nonce = (r._nonce as string) || (r.nonce as string) || (dataField._nonce as string) || "";
+
+    // The wallet's preferred input format for `executeTransaction` is the
+    // Aleo plaintext record string — `{owner: aleo1….private, microcredits:
+    // 5u64.private, _nonce: …group.public}`. The wallet usually exposes it
+    // on `.plaintext`; if not, we reconstruct from fields (matching NullPay's
+    // working pattern in usePayment.ts:535-544). Passing JSON.stringify of
+    // the whole record object causes Shield to throw "Invalid transaction
+    // payload" — it doesn't re-parse the adapter-layer wrapper.
+    let plaintext = (r.plaintext as string) || "";
+    if (!plaintext && owner && data.microcredits) {
+      // Normalize microcredits to `Nu64.private` — data.microcredits may come
+      // as `5000000u64`, `5000000u64.private`, or `5000000`.
+      const amtMatch = String(data.microcredits).match(/^(\d+)/);
+      const amt = amtMatch ? amtMatch[1] : "0";
+      const microcreditsLit = `${amt}u64.private`;
+      const nonceLit = nonce.includes(".") ? nonce : `${nonce}.public`;
+      plaintext = `{ owner: ${owner}.private, microcredits: ${microcreditsLit}, _nonce: ${nonceLit} }`;
+    }
+    // Last-resort fallbacks if we can't build plaintext
+    if (!plaintext) plaintext = (r.ciphertext as string) || "";
+
     return {
-      id: (r.id as string) || (r._nonce as string) || (dataField._nonce as string) || "",
+      id: (r.id as string) || nonce || "",
       programId: (r.programId as string) || programId,
       functionName: (r.function as string) || "",
-      owner: (r.owner as string) || (dataField.owner as string) || "",
+      owner,
       data,
-      nonce: (r._nonce as string) || (dataField._nonce as string) || "",
-      // Serialize the full object so `requestTransaction` can re-consume it.
-      // The Leo/Shield adapter accepts either a plaintext string or the JSON
-      // form of the structured record — JSON is the safe default.
-      ciphertext: JSON.stringify(raw),
+      nonce,
+      ciphertext: plaintext,
       spent,
     };
   }
