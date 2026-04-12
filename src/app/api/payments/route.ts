@@ -83,8 +83,11 @@ export async function POST(request: NextRequest) {
     const txHash = body.tx_hash || body.aleo_tx_id || null;
     const totalMicro = body.total_micro ?? body.amount_micro ?? 0;
 
-    // Verify every invoice in the payload belongs to this company and is
-    // in "approved" status before touching anything.
+    // Verify every invoice belongs to this company. No hard status gate —
+    // the chain already accepted the payment, our job here is to reflect
+    // it. If an invoice is already "paid" it was recorded by a prior
+    // attempt; we treat the duplicate POST as success and fall through so
+    // the tx_hash below can be updated if it was missing.
     if (invoiceIds.length > 0) {
       const { data: invoices, error: invErr } = await supabase
         .from("invoices")
@@ -95,8 +98,10 @@ export async function POST(request: NextRequest) {
         console.error("[payments POST] invoice lookup failed", { userId: user.id, invoiceIds, err: invErr?.message });
         return NextResponse.json({ error: "One or more invoices not found" }, { status: 404 });
       }
+      // Only reject "cancelled" / "rejected" — everything else gets
+      // through as either first-time settlement or idempotent replay.
       for (const inv of invoices) {
-        if (inv.status !== "approved" && inv.status !== "pending") {
+        if (inv.status === "cancelled" || inv.status === "rejected") {
           return NextResponse.json(
             { error: `Invoice ${inv.id} is ${inv.status}; cannot pay` },
             { status: 400 }

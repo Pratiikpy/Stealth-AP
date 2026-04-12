@@ -287,10 +287,27 @@ export default function SettlementsPage() {
       );
     }
 
-    // Reconcile — if the POST above failed, this scans for settled on-chain
-    // payments that don't have a paid invoice yet and fixes the status.
-    // Also runs when POST succeeded, as belt-and-suspenders.
-    if (!payOk) {
+    // Reconcile — if the POST above failed, we still have the tx hash.
+    // Flip every invoice in the payload to "paid" directly via PATCH so
+    // the dashboard reflects the settlement even when /api/payments
+    // can't write a row (e.g. RLS block on payments table). Belt-and-
+    // suspenders; both should succeed on a healthy deploy.
+    if (!payOk && txId) {
+      await Promise.all(
+        invoices.map((inv) =>
+          fetch("/api/invoices", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              id: inv.id,
+              status: "paid",
+              aleo_tx_id: txId,
+            }),
+          }).catch(() => null),
+        ),
+      );
+      // Also fire reconcile in case any payments rows exist from prior
+      // partial attempts.
       try {
         await fetch("/api/invoices/reconcile", { method: "POST", cache: "no-store" });
       } catch {
