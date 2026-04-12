@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import Link from "next/link";
 import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
@@ -54,7 +55,34 @@ export default function DashboardPage() {
   // in "Recent." Previously the stat cards were summing over a capped
   // window, so a paid invoice beyond index 8 would never appear in
   // "Total Settled" even though it was paid.
-  const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=200", []);
+  const { data: invoices, loading, isReal, refresh } = useData<Invoice[]>("/api/invoices?limit=200", []);
+
+  // One-shot reconciliation on first mount — scans the user's invoices
+  // against their payment rows and flips any stuck-as-"approved" invoices
+  // to "paid" if a settled payment exists. Covers rows created before the
+  // /api/payments status-update fix landed. Silent no-op if nothing is
+  // out of sync.
+  const didReconcile = useRef(false);
+  useEffect(() => {
+    if (didReconcile.current) return;
+    didReconcile.current = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/invoices/reconcile", {
+          method: "POST",
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const json = await res.json() as { updated?: number };
+        if (json.updated && json.updated > 0) {
+          // Something moved — refetch invoices so the new stats render.
+          refresh();
+        }
+      } catch {
+        // Silent — reconcile is a convenience, not a requirement.
+      }
+    })();
+  }, [refresh]);
   // The "Recent Invoices" card shows the eight most-recent; the list is
   // already sorted DESC by created_at at the API layer.
   const recentInvoices = invoices.slice(0, 8);
