@@ -48,3 +48,20 @@ contracts/*/build/
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local planning / working documents — not for the public repo
+ACTION_PLAN.md
+AGENTS.md
+CLAUDE.md
+MASTERPLAN.md
+WINNING_STRATEGY.md
+WORLD_CLASS_FRONTEND_DESIGN_RESEARCH.md
+PLAN.md
+tasks/
+test-invoice.html
+
+# tool outputs / scratch
+.specstory/
+*.backup
+*.orig
+*.log

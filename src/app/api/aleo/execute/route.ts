@@ -37,9 +37,19 @@ export async function POST(request: NextRequest) {
     console.log("[aleo/execute]", { programId, functionName, ms: Date.now() - startedAt, status: response.status });
     return response;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Execution failed";
-    console.error("[aleo/execute] unhandled", { programId, functionName, ms: Date.now() - startedAt, message });
-    return NextResponse.json({ error: message, status: "failed" }, { status: 500 });
+    // Never return raw error.message — Leo CLI / SDK errors can include
+    // private key fragments, command-line arguments, and internal paths.
+    // Log fully server-side, return a generic message to the client.
+    console.error("[aleo/execute] unhandled", {
+      programId,
+      functionName,
+      ms: Date.now() - startedAt,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return NextResponse.json(
+      { error: "Transaction execution failed. Check server logs for details.", status: "failed" },
+      { status: 500 }
+    );
   }
 }
 
@@ -105,14 +115,26 @@ async function executeViaLeoCli(
     }
 
     if (output.includes("Error")) {
-      return NextResponse.json({ error: output.slice(-500), status: "failed" }, { status: 500 });
+      // Log the Leo CLI stderr/stdout tail server-side for debugging, but
+      // NEVER return it to the client — the output can contain fragments
+      // of the PRIVATE_KEY env var, internal paths, and command-line args.
+      console.error("[aleo/execute] leo cli reported error", { programId, functionName, tail: output.slice(-500) });
+      return NextResponse.json(
+        { error: "Leo execution failed. Check server logs.", status: "failed" },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ transactionId: null, status: "submitted", output: output.slice(-200) });
+    return NextResponse.json({ transactionId: null, status: "submitted" });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error("[aleo/execute] leo cli failed", { programId, functionName, message });
-    return NextResponse.json({ error: message.slice(-500), status: "failed" }, { status: 500 });
+    // Same rationale — caught exception may wrap the child process stderr
+    // including env vars. Return generic error only.
+    return NextResponse.json(
+      { error: "Leo CLI execution failed. Check server logs.", status: "failed" },
+      { status: 500 }
+    );
   }
 }
 

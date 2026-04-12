@@ -99,9 +99,11 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ root, tree });
   } catch (err) {
+    // BHP256 / WASM errors can contain memory addresses and internal state
+    // that's no-one-else's-business. Log full, return generic.
     console.error("[aleo/merkle] failed", err instanceof Error ? err.message : err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "merkle tree computation failed" },
+      { error: "Merkle tree computation failed. Check server logs." },
       { status: 500 }
     );
   }

@@ -79,9 +79,30 @@ export async function executeViaWallet(
       network,
     };
 
-    console.log("[proving] executeTransaction payload", txPayload);
+    // Payload + result contain the user's private record ciphertext AND
+    // tx hash. The ciphertext shouldn't leak outside dev logs — a
+    // production browser console shouldn't show private record content.
+    // Gate the full dumps behind NODE_ENV === "development"; keep only a
+    // redacted summary in prod.
+    const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+    if (isDev) {
+      console.log("[proving] executeTransaction payload", txPayload);
+    } else {
+      console.log("[proving] executeTransaction", {
+        program: txPayload.program,
+        function: txPayload.function,
+        inputCount: txPayload.inputs.length,
+        fee: txPayload.fee,
+        network: txPayload.network,
+      });
+    }
     const result = await execFn.call(wallet, txPayload);
-    console.log("[proving] executeTransaction result", result);
+    if (isDev) {
+      console.log("[proving] executeTransaction result", result);
+    } else {
+      const txId = typeof result === "string" ? result : (result as { transactionId?: string } | null)?.transactionId ?? "(none)";
+      console.log("[proving] executeTransaction result", { transactionId: txId });
+    }
 
     // Wallet returns a transactionId (string) or { transactionId } depending
     // on the adapter version — normalize.

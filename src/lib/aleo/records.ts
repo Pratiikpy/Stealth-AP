@@ -167,12 +167,13 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
     }
 
     console.log(`[records] ${walletLabel}.requestRecords("${programId}") returned ${rawRecords.length} record(s)`);
-    if (rawRecords.length > 0) {
+    // Full record JSON (including the encrypted recordCiphertext) is helpful
+    // while debugging a wallet's return shape, but it leaks private-balance
+    // metadata into the production browser console. Gate it behind dev.
+    const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+    if (isDev && rawRecords.length > 0) {
       const sample = rawRecords[0];
       console.log(`[records] first record type: ${typeof sample}`, sample);
-      // Also log the JSON dump — Chrome's object preview collapses to
-      // "Object" which hides the actual field names and the plaintext
-      // visibility suffixes. Stringified output is ground truth.
       try {
         console.log(`[records] first record JSON: ${JSON.stringify(sample, null, 2).slice(0, 800)}`);
       } catch {
