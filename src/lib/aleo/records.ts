@@ -65,6 +65,30 @@ export function markTentativelySpent(nonces: string[]) {
   }
 }
 
+/**
+ * Remove nonces from the tentative-spent set. Call this when a tx we marked
+ * ends up failing (wallet rejection, network error, on-chain rejection) — the
+ * records were NOT consumed, so future retries should be able to pick them
+ * again. Without this, a user whose first pay attempt failed would be
+ * locked out of their own records for 5 minutes.
+ */
+export function unmarkTentativelySpent(nonces: string[]) {
+  for (const n of nonces) {
+    if (n) tentativelySpent.delete(n);
+  }
+}
+
+/**
+ * Clear ALL entries. Call after invalidateRecordCache when we know the chain
+ * has just produced new records (post-join, post-shield) — the old entries
+ * we were tracking are either truly spent (on-chain) or completely obsolete,
+ * and leaving them around poisons the recursive auto-retry path that runs
+ * immediately after cache invalidation.
+ */
+export function clearTentativelySpent() {
+  tentativelySpent.clear();
+}
+
 export function isTentativelySpent(nonce: string): boolean {
   pruneTentative();
   return !!nonce && tentativelySpent.has(nonce);
@@ -277,6 +301,12 @@ export async function getTotalBalance(): Promise<{
 export function invalidateRecordCache() {
   recordCache.clear();
   lastScanTime = 0;
+  // Also clear tentatively-spent entries — whenever we explicitly invalidate
+  // (after a successful tx submission / post-confirmation), we want the next
+  // scan to see the chain's authoritative state. Leftover tentative marks
+  // from a PRIOR attempt would incorrectly filter out records that the chain
+  // has since produced (e.g., the output of a confirmed join).
+  tentativelySpent.clear();
 }
 
 /**

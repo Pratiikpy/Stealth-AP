@@ -17,7 +17,7 @@ import { toast } from "sonner";
 import { formatMicro } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
-import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent } from "@/lib/aleo/records";
+import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent, unmarkTentativelySpent } from "@/lib/aleo/records";
 import { getMappingValue, getTransaction } from "@/lib/aleo/client";
 import { generateNonce, nowTimestamp, hashToField } from "@/lib/crypto";
 import type { InvoiceRow as Invoice, CurrencyFlag } from "@/types";
@@ -203,8 +203,22 @@ export function PaymentFlow({
       if (!isBurnerWallet) {
         setProofChecklist(["Scanning wallet for private records"]);
         setProgress(15);
-        const creditsRecords = await getCreditsRecords();
-        const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
+        let creditsRecords = await getCreditsRecords();
+        let payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
+
+        // If no record found on the first scan, give the wallet a moment and
+        // retry once. This handles the common case where a shield/join tx
+        // confirmed on-chain very recently but the wallet extension's local
+        // cache hasn't ingested the new record yet. NullPay uses this exact
+        // pattern (usePayment.ts:496-510) — first scan + 2s delay + retry.
+        if (!payRecord) {
+          setProofChecklist((prev) => [...prev, "No record yet — syncing wallet, retrying in 2s"]);
+          await new Promise((r) => setTimeout(r, 2000));
+          invalidateRecordCache();
+          creditsRecords = await getCreditsRecords();
+          payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
+        }
+
         if (payRecord) {
           payRecordCiphertext = payRecord.ciphertext;
           payRecordNonce = payRecord.nonce;
@@ -223,9 +237,6 @@ export function PaymentFlow({
           if (topTwoSum >= BigInt(totalMicro)) {
             const r1 = sorted[0], r2 = sorted[1];
             toast.info(`Merging two records to cover ${formatMicro(totalMicro)}...`);
-            // Mark both input records as tentatively-spent so a quick retry
-            // can't double-consume them before chain confirmation.
-            markTentativelySpent([r1.nonce, r2.nonce].filter(Boolean));
             const joinResult = await aleoTx.execute(
               "credits.aleo",
               "join",
@@ -237,6 +248,11 @@ export function PaymentFlow({
               bailToReview();
               return;
             }
+            // Mark the two input records as tentatively-spent ONLY after the
+            // tx actually submitted successfully — earlier timing meant a
+            // wallet rejection or network error would leave both records
+            // locked for 5 minutes even though they never left the wallet.
+            markTentativelySpent([r1.nonce, r2.nonce].filter(Boolean));
             // Auto-poll + auto-retry — user does NOT click Pay again.
             const retried = await waitAndRetry(joinResult.transactionId, "Record merge");
             if (!retried) {
@@ -326,10 +342,6 @@ export function PaymentFlow({
       setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
       setProgress(70);
 
-      // Mark the selected record as tentatively-spent — protects against a
-      // fast retry consuming the same record while this tx is unconfirmed.
-      if (payRecordNonce) markTentativelySpent([payRecordNonce]);
-
       // Compute a deterministic field value for invoice_id. The contract's
       // finalize block uses this as the mapping key for replay protection:
       // Mapping::get_or_use(payments, invoice_id, 0field); assert_eq(existing,
@@ -359,10 +371,18 @@ export function PaymentFlow({
       );
 
       if (result.status === "failed") {
+        // Pay didn't actually consume the record — release it so a retry can
+        // pick it again. Without this the user was locked out of their own
+        // record for 5 minutes after any failed pay attempt.
+        if (payRecordNonce) unmarkTentativelySpent([payRecordNonce]);
         toast.error(result.error || "Transaction failed on-chain");
         bailToReview();
         return;
       }
+
+      // Tx submitted and got a txId. Now it's safe to mark the record as
+      // tentatively-spent so a fast double-click can't consume it again.
+      if (payRecordNonce) markTentativelySpent([payRecordNonce]);
 
       invalidateRecordCache();
       getTotalBalance().then(({ aleo }) => {
