@@ -12,6 +12,7 @@ import {
   BarChart3,
   Shield,
   ScrollText,
+  Zap,
   Menu,
   X,
   Wallet,
@@ -29,6 +30,7 @@ const iconMap: Record<string, React.ElementType> = {
   BarChart3,
   Shield,
   ScrollText,
+  Zap,
 };
 
 const navSections = [
@@ -48,6 +50,7 @@ const navSections = [
       { label: "Analytics", href: "/dashboard/analytics", icon: "BarChart3" },
       { label: "Privacy", href: "/dashboard/privacy", icon: "Shield" },
       { label: "Audit", href: "/dashboard/audit", icon: "ScrollText" },
+      { label: "Protocol", href: "/dashboard/protocol", icon: "Zap" },
     ],
   },
 ];
