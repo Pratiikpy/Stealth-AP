@@ -158,14 +158,43 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
 
 /**
  * Get credits records and parse their microcredits value.
+ *
+ * Reads microcredits from whichever field the wallet actually populated:
+ *   - `data.microcredits` (Shield's pre-includePlaintext shape)
+ *   - `data.amount` (older adapter variants)
+ *   - regex on `ciphertext` / plaintext (Shield's post-includePlaintext shape,
+ *     matches NullPay's usePayment.ts:135-150 getMicrocredits fallback)
+ *
+ * The final fallback is critical: after we started calling requestRecords
+ * with includePlaintext=true, Shield returns records with the plaintext
+ * string but sometimes no `data` wrapper — reading only `data.microcredits`
+ * made every record parse to 0n, which looked like "no spendable private
+ * balance" and falsely routed users into the shield branch.
  */
 export async function getCreditsRecords(): Promise<CreditsRecord[]> {
   const records = await getRecords("credits.aleo");
 
-  return records.map((r) => ({
-    ...r,
-    microcredits: parseMicrocredits(r.data.microcredits || r.data.amount || "0"),
-  }));
+  const parsed = records.map((r) => {
+    let microcredits = parseMicrocredits(r.data.microcredits || r.data.amount || "0");
+    if (microcredits === BigInt(0) && r.ciphertext) {
+      const match = r.ciphertext.match(/microcredits:\s*([\d_]+)u64/);
+      if (match?.[1]) {
+        try {
+          microcredits = BigInt(match[1].replace(/_/g, ""));
+        } catch {
+          microcredits = BigInt(0);
+        }
+      }
+    }
+    return { ...r, microcredits };
+  });
+
+  // Per-record balance log so the user can verify the parser found balance
+  // where it exists. If every record logs "0n", we know the extractor broke.
+  const preview = parsed.map((r) => `${r.microcredits.toString()}u`).slice(0, 10);
+  console.log(`[records] credits balances (first 10): [${preview.join(", ")}] — total ${parsed.length} records`);
+
+  return parsed;
 }
 
 /**
