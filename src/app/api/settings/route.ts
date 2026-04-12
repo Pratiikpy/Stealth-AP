@@ -80,7 +80,10 @@ export async function PATCH(request: Request) {
       })
       .eq("id", profile.company_id);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error("[settings] company update failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to save settings" }, { status: 500 });
+    }
   }
 
   if (section === "wallet") {
@@ -89,7 +92,10 @@ export async function PATCH(request: Request) {
       .update({ wallet_address: data.wallet_address })
       .eq("id", user.id);
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error("[settings] wallet update failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to save wallet" }, { status: 500 });
+    }
   }
 
   return NextResponse.json({ success: true });

@@ -10,8 +10,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { searchParams } = new URL(request.url);
-    const status = searchParams.get("status");
+    const status = request.nextUrl.searchParams.get("status");
 
     let query = supabase
       .from("approvals")
@@ -27,7 +26,8 @@ export async function GET(request: NextRequest) {
     const { data, error } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[approvals GET] query failed", error.message);
+      return NextResponse.json({ error: "Failed to fetch approvals" }, { status: 500 });
     }
 
     const transformed = (data || []).map((row: Record<string, unknown>) => {
@@ -99,7 +99,8 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error("[approvals POST approve] failed", { userId: user.id, approvalId, err: error.message });
+        return NextResponse.json({ error: "Failed to approve" }, { status: 500 });
       }
 
       // Update invoice status
@@ -130,7 +131,8 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        console.error("[approvals POST reject] failed", { userId: user.id, approvalId, err: error.message });
+        return NextResponse.json({ error: "Failed to reject" }, { status: 500 });
       }
 
       if (data?.invoices?.id) {

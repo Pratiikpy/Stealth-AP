@@ -18,7 +18,8 @@ export async function GET() {
       .order("name");
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[vendors GET] query failed", error.message);
+      return NextResponse.json({ error: "Failed to fetch vendors" }, { status: 500 });
     }
 
     const transformed = (data || []).map((row: Record<string, unknown>) => ({
@@ -87,7 +88,8 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[vendors POST] insert failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to create vendor" }, { status: 500 });
     }
 
     return NextResponse.json({ data }, { status: 201 });
@@ -113,6 +115,18 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: "Missing vendor id" }, { status: 400 });
     }
 
+    // Resolve the caller's company_id for an explicit ownership check — RLS
+    // would catch a mismatch anyway, but returning a clear 403 beats a silent
+    // no-op update when a user somehow sends another company's vendor id.
+    const { data: profile } = await supabase
+      .from("users")
+      .select("company_id")
+      .eq("id", user.id)
+      .single();
+    if (!profile?.company_id) {
+      return NextResponse.json({ error: "Profile not found" }, { status: 403 });
+    }
+
     const updates: Record<string, unknown> = {};
     if (body.name !== undefined) updates.name = body.name;
     if (body.payment_address !== undefined) updates.payment_address = body.payment_address;
@@ -124,15 +138,25 @@ export async function PATCH(request: NextRequest) {
       .from("vendors")
       .update(updates)
       .eq("id", body.id)
+      .eq("company_id", profile.company_id)
       .select()
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // Sanitize: don't leak raw Postgres/Supabase error strings to clients.
+      console.error("[vendors PATCH] update failed", { userId: user.id, vendorId: body.id, err: error.message });
+      return NextResponse.json({ error: "Failed to update vendor" }, { status: 500 });
+    }
+
+    if (!data) {
+      // PostgREST returns null with no error when the where-clause matches
+      // zero rows (i.e. the vendor isn't owned by this company).
+      return NextResponse.json({ error: "Vendor not found" }, { status: 404 });
     }
 
     return NextResponse.json({ data });
-  } catch {
+  } catch (err) {
+    console.error("[vendors PATCH] unhandled", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "Failed to update vendor" },
       { status: 500 }

@@ -42,7 +42,8 @@ export async function GET(request: NextRequest) {
     const { data, error, count } = await query;
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[invoices GET] query failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to fetch invoices" }, { status: 500 });
     }
 
     // Transform DB rows to match frontend Invoice type (camelCase). ALSO keep
@@ -134,8 +135,8 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      console.log("[StealthAP] Invoice insert error:", error.message, error.details, error.hint);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[invoices POST] insert failed", { userId: user.id, err: error.message, details: error.details, hint: error.hint });
+      return NextResponse.json({ error: "Failed to create invoice" }, { status: 500 });
     }
 
     // Auto-create approval record so invoice appears in /approvals
@@ -186,7 +187,8 @@ export async function PATCH(request: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[invoices PATCH] update failed", { userId: user.id, invoiceId: body.id, err: error.message });
+      return NextResponse.json({ error: "Failed to update invoice" }, { status: 500 });
     }
 
     // When invoice is submitted for approval, auto-create approval record

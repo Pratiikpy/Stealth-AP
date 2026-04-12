@@ -18,7 +18,8 @@ export async function GET() {
       .limit(50);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[payments GET] query failed", error.message);
+      return NextResponse.json({ error: "Failed to fetch payments" }, { status: 500 });
     }
 
     const transformed = (data || []).map((row: Record<string, unknown>) => ({
@@ -102,7 +103,8 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[payments POST] insert failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to record payment" }, { status: 500 });
     }
 
     // Update invoice status to paid

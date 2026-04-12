@@ -18,11 +18,13 @@ export async function GET() {
       .limit(20);
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[audit GET] query failed", error.message);
+      return NextResponse.json({ error: "Failed to fetch proofs" }, { status: 500 });
     }
 
     return NextResponse.json({ data });
-  } catch {
+  } catch (err) {
+    console.error("[audit GET] unhandled", err instanceof Error ? err.message : err);
     return NextResponse.json({ error: "Failed to fetch proofs" }, { status: 500 });
   }
 }
@@ -67,7 +69,8 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error("[audit POST] insert failed", { userId: user.id, err: error.message });
+      return NextResponse.json({ error: "Failed to create proof" }, { status: 500 });
     }
 
     return NextResponse.json({ data }, { status: 201 });

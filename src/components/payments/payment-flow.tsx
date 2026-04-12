@@ -19,7 +19,7 @@ import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
 import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent } from "@/lib/aleo/records";
 import { getMappingValue, getTransaction } from "@/lib/aleo/client";
-import { generateNonce, nowTimestamp } from "@/lib/crypto";
+import { generateNonce, nowTimestamp, hashToField } from "@/lib/crypto";
 import type { InvoiceRow as Invoice, CurrencyFlag } from "@/types";
 
 /** Parse a raw `credits.aleo::account` mapping string like `"52000000u64"` into microcredits. */
@@ -268,7 +268,14 @@ export function PaymentFlow({
         const publicBalance = parseAccountMicrocredits(raw);
         useWalletStore.getState().setBalance({ aleo: publicBalance });
 
-        if (publicBalance >= totalMicro) {
+        // Shield with a 10k microcredit buffer (0.01 ALEO) — the resulting
+        // private record must be at least `totalMicro` when pay_credits_private
+        // runs, but any rounding in output-change arithmetic can leave the
+        // record a few credits short. Matches NullPay's usePayment.ts:160
+        // bufferAmount pattern.
+        const shieldBuffer = 10_000;
+        const shieldAmount = totalMicro + shieldBuffer;
+        if (publicBalance >= shieldAmount) {
           toast.info(
             isBurnerWallet
               ? "Shielding public balance so the SDK can spend it privately..."
@@ -278,7 +285,7 @@ export function PaymentFlow({
           const shieldResult = await aleoTx.execute(
             "credits.aleo",
             "transfer_public_to_private",
-            [address, `${totalMicro}u64`],
+            [address, `${shieldAmount}u64`],
             { successMessage: "Funds shielded. Continuing to payment…" }
           );
 
@@ -323,6 +330,18 @@ export function PaymentFlow({
       // fast retry consuming the same record while this tx is unconfirmed.
       if (payRecordNonce) markTentativelySpent([payRecordNonce]);
 
+      // Compute a deterministic field value for invoice_id. The contract's
+      // finalize block uses this as the mapping key for replay protection:
+      // Mapping::get_or_use(payments, invoice_id, 0field); assert_eq(existing,
+      // 0field). Previously we sent "0field" when invoice_hash was unset,
+      // which meant every invoice collided on the same key and the second
+      // payment to any invoice would abort. Now we use the on-chain hash if
+      // available, otherwise derive one from the DB UUID + invoice_number via
+      // SHA-256 truncated to 248 bits (fits under Aleo's BaseField modulus).
+      const invoiceIdField = invoices[0].invoice_hash
+        ? `${invoices[0].invoice_hash}field`
+        : `${await hashToField(`${invoices[0].id}:${invoices[0].invoice_number || ""}`)}field`;
+
       // Contract signature: (pay_record, payee, invoice_id, amount, invoice_amount, paid_at, nonce)
       const result = await aleoTx.execute(
         PAYMENT_PROGRAM,
@@ -330,7 +349,7 @@ export function PaymentFlow({
         [
           payRecordCiphertext,
           payeeAddress,
-          `${invoices[0].invoice_hash || "0"}field`,
+          invoiceIdField,
           `${totalMicro}u64`,
           `${totalMicro}u64`,
           `${nowTimestamp()}u32`,
