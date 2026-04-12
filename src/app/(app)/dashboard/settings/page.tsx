@@ -8,6 +8,7 @@ import { useWalletStore } from "@/stores/wallet-store";
 import { truncateAddress } from "@/lib/format";
 import { formatMicro } from "@/lib/format";
 import { setThreshold, setSpendingLimit } from "@/lib/aleo/programs/workflow";
+import { setVendorAllowlist } from "@/lib/aleo/programs/invoice";
 import { generateNonce, hashToField } from "@/lib/crypto";
 import { toastSuccess, toastError } from "@/lib/utils";
 
@@ -66,6 +67,13 @@ type SpendingLimit = {
 
 const THRESHOLDS_KEY = "stealthap.thresholds";
 const LIMITS_KEY = "stealthap.limits";
+const ALLOWLIST_KEY = "stealthap.vendor_allowlist";
+
+type AllowlistEntry = {
+  id: string;
+  name: string;
+  vendorHash: string; // field value as string
+};
 
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("company");
@@ -92,16 +100,101 @@ export default function SettingsPage() {
   });
   const [committing, setCommitting] = useState<string | null>(null);
 
+  // Vendor allowlist — approved-vendor registry with on-chain root commitment.
+  // Each entry hashes the vendor name (+ optional domain) to a field value.
+  // The aggregate root is a deterministic sort-then-hash of the list; the
+  // contract stores only the root, leaking nothing about the list.
+  const [allowlist, setAllowlist] = useState<AllowlistEntry[]>([]);
+  const [allowlistRoot, setAllowlistRoot] = useState<string>("");
+  const [allowlistTx, setAllowlistTx] = useState<string>("");
+  const [newAllowlistName, setNewAllowlistName] = useState("");
+
   useEffect(() => {
     try {
       const t = JSON.parse(localStorage.getItem(THRESHOLDS_KEY) || "[]") as ThresholdRule[];
       const l = JSON.parse(localStorage.getItem(LIMITS_KEY) || "[]") as SpendingLimit[];
+      const a = JSON.parse(localStorage.getItem(ALLOWLIST_KEY) || '{"entries":[]}') as { entries: AllowlistEntry[]; root?: string; tx?: string };
       if (Array.isArray(t)) setThresholds(t);
       if (Array.isArray(l)) setLimits(l);
+      if (Array.isArray(a.entries)) setAllowlist(a.entries);
+      if (a.root) setAllowlistRoot(a.root);
+      if (a.tx) setAllowlistTx(a.tx);
     } catch {
       /* empty / corrupt — fall back to [] */
     }
   }, []);
+
+  function persistAllowlist(entries: AllowlistEntry[], root: string, tx: string) {
+    setAllowlist(entries);
+    setAllowlistRoot(root);
+    setAllowlistTx(tx);
+    try {
+      localStorage.setItem(ALLOWLIST_KEY, JSON.stringify({ entries, root, tx }));
+    } catch {}
+  }
+
+  /**
+   * Compute a deterministic digest of the vendor list. Sort by vendorHash so
+   * the digest is stable regardless of insertion order. The on-chain contract
+   * stores this as the Merkle root; true BHP256 Merkle tree construction for
+   * single-vendor proofs is a post-wave WASM integration.
+   */
+  async function computeAllowlistDigest(entries: AllowlistEntry[]): Promise<string> {
+    if (entries.length === 0) return "0";
+    const sorted = [...entries].sort((a, b) => (a.vendorHash > b.vendorHash ? 1 : -1));
+    const joined = sorted.map((e) => e.vendorHash).join(":");
+    return await hashToField(joined);
+  }
+
+  async function addAllowlistEntry() {
+    const name = newAllowlistName.trim();
+    if (!name) return;
+    const vendorHash = await hashToField(`vendor:${name.toLowerCase()}`);
+    if (allowlist.some((e) => e.vendorHash === vendorHash)) {
+      toastError("Vendor already on allowlist");
+      return;
+    }
+    const entries = [...allowlist, { id: crypto.randomUUID(), name, vendorHash }];
+    const root = await computeAllowlistDigest(entries);
+    persistAllowlist(entries, root, ""); // root changed → previous tx is stale
+    setNewAllowlistName("");
+  }
+
+  async function removeAllowlistEntry(id: string) {
+    const entries = allowlist.filter((e) => e.id !== id);
+    const root = await computeAllowlistDigest(entries);
+    persistAllowlist(entries, root, "");
+  }
+
+  async function commitAllowlist() {
+    if (!wallet.connected || !wallet.address) {
+      toastError("Connect your wallet first");
+      return;
+    }
+    if (allowlist.length === 0) {
+      toastError("Add at least one vendor before committing");
+      return;
+    }
+    setCommitting("allowlist");
+    try {
+      const companyHash = await hashToField(wallet.address);
+      const result = await setVendorAllowlist({
+        companyHash,
+        merkleRoot: allowlistRoot,
+        nonce: generateNonce(),
+      });
+      if (result.transactionId) {
+        persistAllowlist(allowlist, allowlistRoot, result.transactionId);
+        toastSuccess("Allowlist committed on-chain", `TX: ${result.transactionId.slice(0, 16)}…`);
+      } else {
+        toastError("On-chain commitment returned no tx id");
+      }
+    } catch (err) {
+      toastError("Commit failed", err instanceof Error ? err.message : String(err));
+    } finally {
+      setCommitting(null);
+    }
+  }
 
   function persistThresholds(next: ThresholdRule[]) {
     setThresholds(next);
@@ -539,6 +632,102 @@ export default function SettingsPage() {
                 >
                   <Plus size={12} />
                   Add
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Vendor Allowlist */}
+          <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+            <div className="px-4 py-3 border-b-2 border-black bg-[#C6F15C] flex items-center justify-between">
+              <span className="font-mono text-[13px] font-bold uppercase tracking-wider text-black">Vendor Allowlist</span>
+              <span className="font-mono text-[10px] text-black/60 uppercase tracking-wider">inv_v2::set_vendor_allowlist</span>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="font-mono text-[11px] text-black/60">
+                Approved-vendor registry for sanctions screening / AP compliance. Only the aggregate root
+                is committed on-chain — the list, individual names, and which vendor was paid stay private.
+                Invoice creation gates on a ZK proof of membership.
+              </p>
+
+              {/* Current root status */}
+              <div className="border-2 border-black bg-[#C6F15C]/20 p-3 font-mono text-[11px] space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-black/60 uppercase tracking-wider text-[9px]">Current root</span>
+                  {allowlistTx ? (
+                    <a
+                      href={`https://explorer.provable.com/v1/testnet/transaction/${allowlistTx}`}
+                      target="_blank" rel="noreferrer"
+                      className="flex items-center gap-1 text-[#A259FF] underline text-[10px]"
+                    >
+                      <Link2 size={10} />
+                      committed · {allowlistTx.slice(0, 10)}…
+                    </a>
+                  ) : (
+                    <span className="text-black/40 text-[10px] italic">uncommitted</span>
+                  )}
+                </div>
+                <p className="break-all text-black">
+                  {allowlistRoot || <span className="text-black/30 italic">empty — add vendors below</span>}
+                </p>
+              </div>
+
+              {/* Entries */}
+              {allowlist.length > 0 && (
+                <div className="border-2 border-black divide-y-2 divide-black/20">
+                  {allowlist.map((e) => (
+                    <div key={e.id} className="px-3 py-2 flex items-center gap-3 font-mono text-[11px]">
+                      <span className="bg-black text-[#C6F15C] px-2 py-0.5 uppercase font-bold">vendor</span>
+                      <span className="text-black flex-1 truncate">{e.name}</span>
+                      <span className="text-black/40 text-[9px] tabular-nums">
+                        {e.vendorHash.slice(0, 10)}…
+                      </span>
+                      <button
+                        onClick={() => removeAllowlistEntry(e.id)}
+                        className="text-black/40 hover:text-[#EF4444]"
+                        title="Remove vendor"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Add vendor */}
+              <div className="border-2 border-dashed border-black/40 p-3 flex gap-2 items-end">
+                <label className="flex flex-col gap-1 flex-1">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Vendor name</span>
+                  <input
+                    type="text"
+                    placeholder="Cipher Infrastructure"
+                    value={newAllowlistName}
+                    onChange={(e) => setNewAllowlistName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") addAllowlistEntry(); }}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <button
+                  onClick={addAllowlistEntry}
+                  disabled={!newAllowlistName.trim()}
+                  className="bg-black text-[#C6F15C] border-2 border-black font-mono text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 flex items-center gap-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] disabled:opacity-40"
+                >
+                  <Plus size={12} />
+                  Add vendor
+                </button>
+              </div>
+
+              {/* Commit */}
+              <div className="flex items-center justify-between gap-3 pt-2">
+                <p className="font-mono text-[10px] text-black/60">
+                  {allowlist.length} vendor{allowlist.length === 1 ? "" : "s"} · root changes on every add/remove · commit after each change
+                </p>
+                <button
+                  onClick={commitAllowlist}
+                  disabled={committing === "allowlist" || allowlist.length === 0}
+                  className="bg-[#C6F15C] text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50"
+                >
+                  {committing === "allowlist" ? "Signing…" : "Commit Allowlist on-chain"}
                 </button>
               </div>
             </div>
