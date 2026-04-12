@@ -37,7 +37,7 @@ export function PaymentFlow({
   onSuccess,
 }: PaymentFlowProps) {
   const [step, setStep] = useState<PaymentStep>("review");
-  const [token, setToken] = useState<CurrencyFlag>("USDCx");
+  const [token, setToken] = useState<CurrencyFlag>("ALEO");
   const [progress, setProgress] = useState(0);
   const [proofChecklist, setProofChecklist] = useState<string[]>([]);
   const [settlementTime, setSettlementTime] = useState<string | null>(null);
@@ -98,6 +98,7 @@ export function PaymentFlow({
           return;
         }
 
+        // Contract signature: (pay_record, payee, invoice_id, amount, invoice_amount, paid_at, nonce)
         const result = await aleoTx.execute(
           PAYMENT_PROGRAM,
           "pay_credits_private",
@@ -106,6 +107,7 @@ export function PaymentFlow({
             payeeAddress,
             `${invoices[0].invoice_hash || "0"}field`,
             `${totalMicro}u64`,
+            `${totalMicro}u64`, // invoice_amount — enforces amount >= invoice_amount
             `${nowTimestamp()}u32`,
             `${nonce}field`,
           ],
@@ -113,7 +115,10 @@ export function PaymentFlow({
         );
 
         if (result.status === "failed") {
+          toast.error(result.error || "Transaction failed on-chain");
           setStep("review");
+          setProgress(0);
+          setProofChecklist([]);
           return;
         }
 
@@ -198,26 +203,32 @@ export function PaymentFlow({
           ))}
         </div>
 
-        {/* Token selector */}
+        {/* Token — ALEO only for now */}
         <div>
           <label className="block text-sm font-medium text-text-2 mb-2">
             Pay with
           </label>
           <div className="flex gap-2">
-            {(["USDCx", "USAD", "ALEO"] as CurrencyFlag[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setToken(t)}
-                className={cn(
-                  "flex-1 rounded-md border px-4 py-2.5 text-sm font-medium transition-all duration-150",
-                  token === t
-                    ? "border-accent bg-accent-muted text-accent"
-                    : "border-border text-text-2 hover:border-border-hover"
-                )}
-              >
-                {t}
-              </button>
-            ))}
+            <button
+              disabled
+              className="flex-1 border-2 border-black bg-[#C6F15C] px-4 py-2.5 text-sm font-mono font-bold uppercase tracking-wider text-black"
+            >
+              ALEO
+            </button>
+            <button
+              disabled
+              title="Stablecoin payments coming in v3"
+              className="flex-1 border-2 border-black bg-white px-4 py-2.5 text-sm font-mono font-bold uppercase tracking-wider text-black/30 cursor-not-allowed"
+            >
+              USDCx (soon)
+            </button>
+            <button
+              disabled
+              title="Stablecoin payments coming in v3"
+              className="flex-1 border-2 border-black bg-white px-4 py-2.5 text-sm font-mono font-bold uppercase tracking-wider text-black/30 cursor-not-allowed"
+            >
+              USAD (soon)
+            </button>
           </div>
         </div>
 
