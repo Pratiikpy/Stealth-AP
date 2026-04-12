@@ -99,16 +99,10 @@ export default function SettlementsPage() {
     return withVendors.vendors?.payment_address || null;
   }
 
-  // Get approved invoices that are ready for payment — only those with a
-  // real vendor payment address (vendor-first flow).
+  // Get approved invoices. Payment address check happens at settlement time.
   const approvedInvoices = useMemo(
-    () =>
-      invoices.filter(
-        (inv) =>
-          inv.status === "approved" &&
-          (!isReal || !!getPaymentAddress(inv))
-      ),
-    [invoices, isReal]
+    () => invoices.filter((inv) => inv.status === "approved"),
+    [invoices]
   );
 
   function handleSelectInvoice(inv: Invoice) {
