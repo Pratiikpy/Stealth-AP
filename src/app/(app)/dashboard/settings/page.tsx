@@ -3,10 +3,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import { PageHeader } from "@/components/ui/page-header";
-import { Settings, Wallet, Users, ShieldCheck, Save } from "lucide-react";
+import { Settings, Wallet, Users, ShieldCheck, Save, Plus, Trash2, Link2 } from "lucide-react";
 import { useWalletStore } from "@/stores/wallet-store";
 import { truncateAddress } from "@/lib/format";
 import { formatMicro } from "@/lib/format";
+import { setThreshold, setSpendingLimit } from "@/lib/aleo/programs/workflow";
+import { generateNonce, hashToField } from "@/lib/crypto";
+import { toastSuccess, toastError } from "@/lib/utils";
 
 const tabs = [
   { id: "company", label: "Company", icon: Settings, color: "bg-[#C6F15C]" },
@@ -38,6 +41,32 @@ interface TeamMember {
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
+/**
+ * Approval threshold rule — user-facing shape. Persisted per-address in
+ * localStorage; committed on-chain via wf_v2::set_threshold on Save.
+ * The contract is the source of truth; localStorage is just the UI's
+ * memory so the table persists across refreshes.
+ */
+type ThresholdRule = {
+  id: string;
+  tier: number;
+  minMicro: number;
+  maxMicro: number;
+  approver: string;
+  autoApprove: boolean;
+  txHash?: string;
+};
+
+type SpendingLimit = {
+  id: string;
+  category: string;
+  limitMicro: number;
+  txHash?: string;
+};
+
+const THRESHOLDS_KEY = "stealthap.thresholds";
+const LIMITS_KEY = "stealthap.limits";
+
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<TabId>("company");
   const [company, setCompany] = useState<CompanyData | null>(null);
@@ -45,6 +74,135 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
   const wallet = useWalletStore();
+
+  // Threshold rules + spending limits — local state, hydrated from
+  // localStorage on mount, committed on-chain per row when user clicks Save.
+  const [thresholds, setThresholds] = useState<ThresholdRule[]>([]);
+  const [limits, setLimits] = useState<SpendingLimit[]>([]);
+  const [newThreshold, setNewThreshold] = useState<Omit<ThresholdRule, "id" | "txHash">>({
+    tier: 1,
+    minMicro: 0,
+    maxMicro: 5_000_000,
+    approver: "",
+    autoApprove: false,
+  });
+  const [newLimit, setNewLimit] = useState<Omit<SpendingLimit, "id" | "txHash">>({
+    category: "",
+    limitMicro: 50_000_000,
+  });
+  const [committing, setCommitting] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const t = JSON.parse(localStorage.getItem(THRESHOLDS_KEY) || "[]") as ThresholdRule[];
+      const l = JSON.parse(localStorage.getItem(LIMITS_KEY) || "[]") as SpendingLimit[];
+      if (Array.isArray(t)) setThresholds(t);
+      if (Array.isArray(l)) setLimits(l);
+    } catch {
+      /* empty / corrupt — fall back to [] */
+    }
+  }, []);
+
+  function persistThresholds(next: ThresholdRule[]) {
+    setThresholds(next);
+    try { localStorage.setItem(THRESHOLDS_KEY, JSON.stringify(next)); } catch {}
+  }
+  function persistLimits(next: SpendingLimit[]) {
+    setLimits(next);
+    try { localStorage.setItem(LIMITS_KEY, JSON.stringify(next)); } catch {}
+  }
+
+  async function commitThreshold(rule: ThresholdRule) {
+    if (!wallet.connected || !wallet.address) {
+      toastError("Connect your wallet first");
+      return;
+    }
+    setCommitting(rule.id);
+    try {
+      const companyHash = await hashToField(wallet.address);
+      const result = await setThreshold({
+        companyHash,
+        tier: rule.tier,
+        minAmount: BigInt(rule.minMicro),
+        maxAmount: BigInt(rule.maxMicro),
+        approver: rule.approver || wallet.address,
+        autoApprove: rule.autoApprove,
+      });
+      if (result.transactionId) {
+        const updated = thresholds.map((r) => (r.id === rule.id ? { ...r, txHash: result.transactionId ?? undefined } : r));
+        persistThresholds(updated);
+        toastSuccess("Threshold committed on-chain", `TX: ${result.transactionId.slice(0, 16)}…`);
+      } else {
+        toastError("On-chain commitment returned no tx id");
+      }
+    } catch (err) {
+      toastError("Commit failed", err instanceof Error ? err.message : String(err));
+    } finally {
+      setCommitting(null);
+    }
+  }
+
+  async function commitLimit(limit: SpendingLimit) {
+    if (!wallet.connected || !wallet.address) {
+      toastError("Connect your wallet first");
+      return;
+    }
+    setCommitting(limit.id);
+    try {
+      const companyHash = await hashToField(wallet.address);
+      const categoryHash = await hashToField(limit.category);
+      const result = await setSpendingLimit({
+        companyHash,
+        categoryHash,
+        limitAmount: BigInt(limit.limitMicro),
+        nonce: generateNonce(),
+      });
+      if (result.transactionId) {
+        const updated = limits.map((l) => (l.id === limit.id ? { ...l, txHash: result.transactionId ?? undefined } : l));
+        persistLimits(updated);
+        toastSuccess("Spending limit committed on-chain", `TX: ${result.transactionId.slice(0, 16)}…`);
+      } else {
+        toastError("On-chain commitment returned no tx id");
+      }
+    } catch (err) {
+      toastError("Commit failed", err instanceof Error ? err.message : String(err));
+    } finally {
+      setCommitting(null);
+    }
+  }
+
+  function addThreshold() {
+    if (!newThreshold.approver || newThreshold.minMicro < 0 || newThreshold.maxMicro <= newThreshold.minMicro) {
+      toastError("Check approver address and min < max range");
+      return;
+    }
+    const rule: ThresholdRule = {
+      ...newThreshold,
+      id: crypto.randomUUID(),
+    };
+    persistThresholds([...thresholds, rule]);
+    setNewThreshold({ tier: 1, minMicro: 0, maxMicro: 5_000_000, approver: "", autoApprove: false });
+  }
+
+  function addLimit() {
+    if (!newLimit.category.trim() || newLimit.limitMicro <= 0) {
+      toastError("Category name and positive limit required");
+      return;
+    }
+    const entry: SpendingLimit = {
+      ...newLimit,
+      id: crypto.randomUUID(),
+    };
+    persistLimits([...limits, entry]);
+    setNewLimit({ category: "", limitMicro: 50_000_000 });
+  }
+
+  function removeThreshold(id: string) {
+    persistThresholds(thresholds.filter((r) => r.id !== id));
+  }
+  function removeLimit(id: string) {
+    persistLimits(limits.filter((l) => l.id !== id));
+  }
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -193,16 +351,196 @@ export default function SettingsPage() {
       )}
 
       {activeTab === "rules" && (
-        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }} className="space-y-6">
+          {/* Threshold rules */}
           <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
-            <div className="px-4 py-3 border-b-2 border-black bg-[#FF90E8]">
-              <span className="font-mono text-[13px] font-bold uppercase tracking-wider text-black">Approval Rules</span>
+            <div className="px-4 py-3 border-b-2 border-black bg-[#FF90E8] flex items-center justify-between">
+              <span className="font-mono text-[13px] font-bold uppercase tracking-wider text-black">Approval Thresholds</span>
+              <span className="font-mono text-[10px] text-black/60 uppercase tracking-wider">wf_v2::set_threshold</span>
             </div>
-            <div className="px-4 py-6 text-center">
-              <p className="text-[12px] font-mono text-black/60">
-                Approval rules are enforced on-chain via stealthap_wf_v2.aleo.
-                Set thresholds using the wallet connection.
+            <div className="p-4 space-y-3">
+              <p className="font-mono text-[11px] text-black/60">
+                Amount-based routing. Each tier specifies which approver handles invoices in a given range.
+                Auto-approve tiers skip human review. Rules commit on-chain and enforce privately.
               </p>
+
+              {/* Existing rules table */}
+              {thresholds.length > 0 && (
+                <div className="border-2 border-black divide-y-2 divide-black/20">
+                  {thresholds.map((r) => (
+                    <div key={r.id} className="px-3 py-2 flex items-center gap-3 font-mono text-[11px]">
+                      <span className="bg-black text-[#C6F15C] px-2 py-0.5 uppercase font-bold">T{r.tier}</span>
+                      <span className="text-black tabular-nums shrink-0">
+                        {formatMicro(r.minMicro)} – {formatMicro(r.maxMicro)}
+                      </span>
+                      <span className="text-black/60 flex-1 truncate">
+                        {r.autoApprove ? "auto-approve" : truncateAddress(r.approver, 8)}
+                      </span>
+                      {r.txHash ? (
+                        <a
+                          href={`https://explorer.provable.com/v1/testnet/transaction/${r.txHash}`}
+                          target="_blank" rel="noreferrer"
+                          className="flex items-center gap-1 text-[#A259FF] underline"
+                        >
+                          <Link2 size={10} />
+                          {r.txHash.slice(0, 10)}…
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => commitThreshold(r)}
+                          disabled={committing === r.id}
+                          className="bg-[#C6F15C] text-black border-2 border-black px-2 py-1 uppercase font-bold text-[10px] tracking-wider hover:translate-x-[1px] hover:translate-y-[1px] disabled:opacity-50"
+                        >
+                          {committing === r.id ? "Signing…" : "Commit on-chain"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => removeThreshold(r.id)}
+                        className="text-black/40 hover:text-[#EF4444]"
+                        title="Remove rule"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Add rule form */}
+              <div className="border-2 border-dashed border-black/40 p-3 grid grid-cols-5 gap-2 items-end">
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Tier</span>
+                  <input
+                    type="number" min="0" max="10"
+                    value={newThreshold.tier}
+                    onChange={(e) => setNewThreshold({ ...newThreshold, tier: parseInt(e.target.value || "0") })}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Min (ALEO)</span>
+                  <input
+                    type="number" min="0"
+                    value={newThreshold.minMicro / 1_000_000}
+                    onChange={(e) => setNewThreshold({ ...newThreshold, minMicro: Math.round(parseFloat(e.target.value || "0") * 1_000_000) })}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <label className="flex flex-col gap-1">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Max (ALEO)</span>
+                  <input
+                    type="number" min="0"
+                    value={newThreshold.maxMicro / 1_000_000}
+                    onChange={(e) => setNewThreshold({ ...newThreshold, maxMicro: Math.round(parseFloat(e.target.value || "0") * 1_000_000) })}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 col-span-1">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Approver (aleo1…)</span>
+                  <input
+                    type="text"
+                    placeholder="aleo1… or leave empty for self"
+                    value={newThreshold.approver}
+                    onChange={(e) => setNewThreshold({ ...newThreshold, approver: e.target.value })}
+                    className="border-2 border-black bg-white font-mono text-[10px] p-1.5"
+                  />
+                </label>
+                <button
+                  onClick={addThreshold}
+                  className="bg-black text-[#C6F15C] border-2 border-black font-mono text-[10px] font-bold uppercase tracking-wider py-1.5 flex items-center justify-center gap-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                >
+                  <Plus size={12} />
+                  Add
+                </button>
+              </div>
+
+              <label className="flex items-center gap-2 font-mono text-[11px] text-black">
+                <input
+                  type="checkbox"
+                  checked={newThreshold.autoApprove}
+                  onChange={(e) => setNewThreshold({ ...newThreshold, autoApprove: e.target.checked })}
+                />
+                <span>Auto-approve (skip human review for this tier)</span>
+              </label>
+            </div>
+          </div>
+
+          {/* Spending limits */}
+          <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+            <div className="px-4 py-3 border-b-2 border-black bg-[#B3A0FF] flex items-center justify-between">
+              <span className="font-mono text-[13px] font-bold uppercase tracking-wider text-black">Spending Limits</span>
+              <span className="font-mono text-[10px] text-black/60 uppercase tracking-wider">wf_v2::set_spending_limit</span>
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="font-mono text-[11px] text-black/60">
+                Monthly caps per GL category, enforced on-chain. Payments that exceed the limit are blocked
+                at settlement time without revealing totals to anyone outside your org.
+              </p>
+
+              {limits.length > 0 && (
+                <div className="border-2 border-black divide-y-2 divide-black/20">
+                  {limits.map((l) => (
+                    <div key={l.id} className="px-3 py-2 flex items-center gap-3 font-mono text-[11px]">
+                      <span className="bg-black text-[#B3A0FF] px-2 py-0.5 uppercase font-bold flex-1">{l.category}</span>
+                      <span className="text-black tabular-nums shrink-0">{formatMicro(l.limitMicro)} / month</span>
+                      {l.txHash ? (
+                        <a
+                          href={`https://explorer.provable.com/v1/testnet/transaction/${l.txHash}`}
+                          target="_blank" rel="noreferrer"
+                          className="flex items-center gap-1 text-[#A259FF] underline"
+                        >
+                          <Link2 size={10} />
+                          {l.txHash.slice(0, 10)}…
+                        </a>
+                      ) : (
+                        <button
+                          onClick={() => commitLimit(l)}
+                          disabled={committing === l.id}
+                          className="bg-[#C6F15C] text-black border-2 border-black px-2 py-1 uppercase font-bold text-[10px] tracking-wider hover:translate-x-[1px] hover:translate-y-[1px] disabled:opacity-50"
+                        >
+                          {committing === l.id ? "Signing…" : "Commit on-chain"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => removeLimit(l.id)}
+                        className="text-black/40 hover:text-[#EF4444]"
+                        title="Remove limit"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="border-2 border-dashed border-black/40 p-3 grid grid-cols-5 gap-2 items-end">
+                <label className="flex flex-col gap-1 col-span-2">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Category</span>
+                  <input
+                    type="text"
+                    placeholder="Marketing, Infra, Legal…"
+                    value={newLimit.category}
+                    onChange={(e) => setNewLimit({ ...newLimit, category: e.target.value })}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 col-span-2">
+                  <span className="font-mono text-[9px] uppercase font-bold text-black/60">Limit (ALEO/month)</span>
+                  <input
+                    type="number" min="0"
+                    value={newLimit.limitMicro / 1_000_000}
+                    onChange={(e) => setNewLimit({ ...newLimit, limitMicro: Math.round(parseFloat(e.target.value || "0") * 1_000_000) })}
+                    className="border-2 border-black bg-white font-mono text-[12px] p-1.5"
+                  />
+                </label>
+                <button
+                  onClick={addLimit}
+                  className="bg-black text-[#B3A0FF] border-2 border-black font-mono text-[10px] font-bold uppercase tracking-wider py-1.5 flex items-center justify-center gap-1 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                >
+                  <Plus size={12} />
+                  Add
+                </button>
+              </div>
             </div>
           </div>
         </motion.div>
