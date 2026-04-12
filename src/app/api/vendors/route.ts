@@ -118,12 +118,22 @@ export async function PATCH(request: NextRequest) {
     // Resolve the caller's company_id for an explicit ownership check — RLS
     // would catch a mismatch anyway, but returning a clear 403 beats a silent
     // no-op update when a user somehow sends another company's vendor id.
-    const { data: profile } = await supabase
+    // Auto-create profile if missing so a first-time user can still save a
+    // vendor address without hitting a 403 loop.
+    let profile: { company_id: string } | null = null;
+    const { data: existingProfile } = await supabase
       .from("users")
       .select("company_id")
       .eq("id", user.id)
-      .single();
+      .maybeSingle();
+    if (existingProfile?.company_id) {
+      profile = existingProfile;
+    } else {
+      const companyId = await ensureProfile(user.id, user.email!);
+      if (companyId) profile = { company_id: companyId };
+    }
     if (!profile?.company_id) {
+      console.error("[vendors PATCH] no profile could be resolved", { userId: user.id });
       return NextResponse.json({ error: "Profile not found" }, { status: 403 });
     }
 

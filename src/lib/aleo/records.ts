@@ -18,14 +18,24 @@ export interface ParsedRecord {
   nonce: string;
   /**
    * The serialized form to pass as a record input when calling
-   * `requestTransaction`. Either the plaintext string the wallet returned
-   * (e.g. `{owner: aleo1…, microcredits: 5u64.private, …}`) or, if the wallet
-   * returned a structured object, `JSON.stringify(object)`. Leo / Shield /
-   * Puzzle wallet adapters accept both shapes.
+   * `requestTransaction`. Initially set from whatever the wallet returns
+   * (encrypted ciphertext or plaintext); after our decrypt pass this is
+   * always the Aleo plaintext string the wallet will accept back.
    */
   ciphertext: string;
+  /**
+   * The encrypted `record1…` blob as returned by Shield/Puzzle. Kept so we
+   * can call `wallet.decrypt(recordCiphertext)` during the post-fetch decrypt
+   * pass when the initial response didn't include plaintext.
+   */
+  recordCiphertext?: string;
   /** True when this record has already been consumed in a prior tx. */
   spent: boolean;
+  /**
+   * Optional microcredits value filled in after decrypt (for credits records
+   * only). Not set for non-credits program records.
+   */
+  microcredits?: bigint;
 }
 
 export interface CreditsRecord extends ParsedRecord {
@@ -174,8 +184,49 @@ export async function getRecords(programId: string): Promise<ParsedRecord[]> {
       .map((raw) => normalizeRecord(raw, programId))
       .filter((r): r is ParsedRecord => r !== null);
 
+    // Filter spent records first — no point decrypting something that's
+    // already been consumed on-chain.
     const unspent = parsed.filter((r) => !r.spent);
     console.log(`[records] parsed ${parsed.length} record(s), ${unspent.length} unspent`);
+
+    // Shield/Puzzle under the ON_CHAIN_HISTORY permission return records as
+    // encrypted ciphertexts (field `recordCiphertext`). They do NOT include
+    // a `plaintext` field in the response, so we can't read microcredits.
+    // The wallet exposes a `decrypt(ciphertext)` method — call it per record
+    // so the spend logic sees real balances. Matches NullPay's fallback at
+    // usePayment.ts:472-479.
+    const decryptFn = wallet.decrypt as ((c: string) => Promise<string>) | undefined;
+    if (decryptFn) {
+      const needDecrypt = unspent.filter((r) => r.microcredits === undefined || r.microcredits === BigInt(0));
+      if (needDecrypt.length > 0) {
+        console.log(`[records] decrypting ${needDecrypt.length} record(s) via ${walletLabel}.decrypt`);
+        await Promise.all(
+          needDecrypt.map(async (r) => {
+            const cipher = r.recordCiphertext;
+            if (!cipher) return;
+            try {
+              const plaintext = await decryptFn.call(wallet, cipher);
+              if (plaintext && typeof plaintext === "string") {
+                r.ciphertext = plaintext; // this field is what we pass to executeTransaction
+                const m = plaintext.match(/microcredits:\s*([\d_]+)u64/);
+                if (m?.[1]) {
+                  try {
+                    r.microcredits = BigInt(m[1].replace(/_/g, ""));
+                  } catch { /* parse error, leave as-is */ }
+                }
+                // Also extract the nonce if not already set
+                if (!r.nonce) {
+                  const nonceMatch = plaintext.match(/_nonce:\s*(\d+)group/);
+                  if (nonceMatch?.[1]) r.nonce = `${nonceMatch[1]}group.public`;
+                }
+              }
+            } catch (err) {
+              console.warn("[records] decrypt failed for one record:", err);
+            }
+          }),
+        );
+      }
+    }
 
     recordCache.set(cacheKey, unspent);
     lastScanTime = now;
@@ -205,7 +256,13 @@ export async function getCreditsRecords(): Promise<CreditsRecord[]> {
   const records = await getRecords("credits.aleo");
 
   const parsed = records.map((r) => {
-    let microcredits = parseMicrocredits(r.data.microcredits || r.data.amount || "0");
+    // getRecords's decrypt pass may have already populated microcredits from
+    // the decrypted plaintext. Trust that if present; only fall back to our
+    // own extraction when it's still zero/missing.
+    let microcredits = r.microcredits ?? BigInt(0);
+    if (microcredits === BigInt(0)) {
+      microcredits = parseMicrocredits(r.data.microcredits || r.data.amount || "0");
+    }
     if (microcredits === BigInt(0) && r.ciphertext) {
       const match = r.ciphertext.match(/microcredits:\s*([\d_]+)u64/);
       if (match?.[1]) {
@@ -219,8 +276,6 @@ export async function getCreditsRecords(): Promise<CreditsRecord[]> {
     return { ...r, microcredits };
   });
 
-  // Per-record balance log so the user can verify the parser found balance
-  // where it exists. If every record logs "0n", we know the extractor broke.
   const preview = parsed.map((r) => `${r.microcredits.toString()}u`).slice(0, 10);
   console.log(`[records] credits balances (first 10): [${preview.join(", ")}] — total ${parsed.length} records`);
 
@@ -338,34 +393,34 @@ function normalizeRecord(raw: unknown, programId: string): ParsedRecord | null {
     const owner = (r.owner as string) || (dataField.owner as string) || "";
     const nonce = (r._nonce as string) || (r.nonce as string) || (dataField._nonce as string) || "";
 
-    // The wallet's preferred input format for `executeTransaction` is the
-    // Aleo plaintext record string — `{owner: aleo1….private, microcredits:
-    // 5u64.private, _nonce: …group.public}`. The wallet usually exposes it
-    // on `.plaintext`; if not, we reconstruct from fields (matching NullPay's
-    // working pattern in usePayment.ts:535-544). Passing JSON.stringify of
-    // the whole record object causes Shield to throw "Invalid transaction
-    // payload" — it doesn't re-parse the adapter-layer wrapper.
+    // Shield/Puzzle return the encrypted form on `recordCiphertext`; older
+    // adapters use `ciphertext`. Keep whichever exists so the decrypt pass
+    // in getRecords() can resolve it.
+    const recordCiphertext =
+      (r.recordCiphertext as string) || (r.ciphertext as string) || "";
+
+    // Preferred: plaintext string the wallet returned directly.
+    // Fallback: reconstruct from fields.
+    // Last resort: the encrypted ciphertext (the decrypt pass will overwrite
+    // this once it has plaintext).
     let plaintext = (r.plaintext as string) || "";
     if (!plaintext && owner && data.microcredits) {
-      // Normalize microcredits to `Nu64.private` — data.microcredits may come
-      // as `5000000u64`, `5000000u64.private`, or `5000000`.
-      const amtMatch = String(data.microcredits).match(/^(\d+)/);
-      const amt = amtMatch ? amtMatch[1] : "0";
-      const microcreditsLit = `${amt}u64.private`;
+      const amtMatch = String(data.microcredits).match(/^([\d_]+)/);
+      const amt = amtMatch ? amtMatch[1].replace(/_/g, "") : "0";
       const nonceLit = nonce.includes(".") ? nonce : `${nonce}.public`;
-      plaintext = `{ owner: ${owner}.private, microcredits: ${microcreditsLit}, _nonce: ${nonceLit} }`;
+      plaintext = `{ owner: ${owner}.private, microcredits: ${amt}u64.private, _nonce: ${nonceLit} }`;
     }
-    // Last-resort fallbacks if we can't build plaintext
-    if (!plaintext) plaintext = (r.ciphertext as string) || "";
+    if (!plaintext) plaintext = recordCiphertext;
 
     return {
-      id: (r.id as string) || nonce || "",
-      programId: (r.programId as string) || programId,
-      functionName: (r.function as string) || "",
+      id: (r.id as string) || (r.commitment as string) || nonce || "",
+      programId: (r.programId as string) || (r.programName as string) || programId,
+      functionName: (r.function as string) || (r.functionName as string) || "",
       owner,
       data,
       nonce,
       ciphertext: plaintext,
+      recordCiphertext,
       spent,
     };
   }
