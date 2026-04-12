@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { Badge } from "@/components/ui/badge";
 import { MoneyDisplay } from "@/components/ui/money-display";
 import { motion } from "framer-motion";
-import { Shield, CheckCircle2, XCircle } from "lucide-react";
+import { Shield, CheckCircle2, XCircle, Eye, EyeOff } from "lucide-react";
 import { toast } from "sonner";
 import type { Approval, Invoice } from "@/lib/types";
 import { useWalletStore } from "@/stores/wallet-store";
@@ -23,8 +23,28 @@ function urgencyColor(amount: number): string {
 export default function ApprovalsPage() {
   const [actioning, setActioning] = useState<string | null>(null);
 
+  // Blind approval — default ON. Approvers see amount + category + invoice id
+  // and approve based on policy, not on "do I like this vendor." Prevents
+  // favoritism, approver-vendor collusion, and leaked-identity attacks where
+  // seeing the vendor name tips off the approver to bias the decision.
+  // Admin-only "reveal" for cases where identity is genuinely needed.
+  const [blindMode, setBlindMode] = useState(true);
+
   const { data: approvals, refresh: refreshApprovals, isReal } = useData<Approval[]>("/api/approvals", mockApprovals);
   const { data: invoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+
+  /** Stable short hash for the redacted vendor display. Same vendor always
+   *  maps to the same code within a session so an approver can still match
+   *  related invoices, but they never see the actual name unless they
+   *  explicitly reveal it. */
+  function vendorRedacted(vendorName: string): string {
+    let h = 0;
+    for (let i = 0; i < vendorName.length; i++) {
+      h = ((h << 5) - h + vendorName.charCodeAt(i)) | 0;
+    }
+    const code = Math.abs(h).toString(36).slice(0, 6).toUpperCase();
+    return `Vendor #${code}`;
+  }
 
   const pendingApprovals = approvals.filter((a) => a.status === "pending");
   const recentDecisions = approvals.filter(
@@ -128,6 +148,16 @@ export default function ApprovalsPage() {
       <PageHeader
         title="Approvals"
         description="Approval recorded on-chain with privacy"
+        action={
+          <button
+            onClick={() => setBlindMode((b) => !b)}
+            className="flex items-center gap-2 bg-white text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all"
+            title={blindMode ? "Vendor names hidden — click to reveal (admin action)" : "Vendor names visible"}
+          >
+            {blindMode ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {blindMode ? "Blind mode" : "Unblinded"}
+          </button>
+        }
       />
 
       {/* Privacy notice */}
@@ -171,8 +201,15 @@ export default function ApprovalsPage() {
                 <span className={`w-3 h-3 border-2 border-black flex-shrink-0 mt-1.5 ${urgencyColor(approval.amount)}`} />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-baseline gap-2 mb-1">
-                    <span className="text-[16px] font-mono font-black text-black uppercase">{approval.vendorName}</span>
+                    <span className="text-[16px] font-mono font-black text-black uppercase">
+                      {blindMode ? vendorRedacted(approval.vendorName) : approval.vendorName}
+                    </span>
                     <span className="text-[11px] font-mono text-black/50">{approval.invoiceId}</span>
+                    {blindMode && (
+                      <span className="text-[9px] font-mono font-bold uppercase tracking-wider bg-black text-[#C6F15C] px-1.5 py-0.5">
+                        private
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-baseline gap-3 mb-3">
@@ -268,7 +305,9 @@ export default function ApprovalsPage() {
                   className="border-b-2 border-black last:border-0 hover:bg-[#C6F15C]/20 transition-colors"
                 >
                   <td className="px-3 py-2.5 font-mono text-black font-bold text-[12px]">{decision.invoiceId}</td>
-                  <td className="px-3 py-2.5 font-mono text-black">{decision.vendorName}</td>
+                  <td className="px-3 py-2.5 font-mono text-black">
+                    {blindMode ? vendorRedacted(decision.vendorName) : decision.vendorName}
+                  </td>
                   <td className="px-3 py-2.5 text-right">
                     <MoneyDisplay amount={decision.amount} token={decision.token} className="text-black font-mono" />
                   </td>
