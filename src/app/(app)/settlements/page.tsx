@@ -256,8 +256,13 @@ export default function SettlementsPage() {
   }
 
   async function handlePaymentSuccess(invoices: InvoiceRow[], txId?: string) {
+    // Actually check the response — previously this block swallowed 4xx/5xx
+    // returns silently (fetch only throws on network failure), so the user
+    // saw "Payment saved!" even when the DB save 500'd, leaving "Total
+    // Settled" stuck at 0 with no explanation.
+    let payOk = false;
     try {
-      await fetch("/api/payments", {
+      const res = await fetch("/api/payments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,20 +274,62 @@ export default function SettlementsPage() {
           status: "settled",
         }),
       });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `status ${res.status}` }));
+        throw new Error(body.error || `status ${res.status}`);
+      }
+      payOk = true;
       toastSuccess("Payment saved", "Settlement recorded successfully.");
-    } catch {
-      toastError("Failed to save payment", "The on-chain payment succeeded but the DB record was not saved. Please contact support.");
+    } catch (err) {
+      toastError(
+        "DB save failed — on-chain payment succeeded",
+        err instanceof Error ? err.message : "Unknown error. Reload to auto-reconcile.",
+      );
     }
-    // Refresh BOTH lists — payments for the history table, invoices so the
-    // just-paid invoice drops out of the "Select Invoice to Pay" selector.
+
+    // Reconcile — if the POST above failed, this scans for settled on-chain
+    // payments that don't have a paid invoice yet and fixes the status.
+    // Also runs when POST succeeded, as belt-and-suspenders.
+    if (!payOk) {
+      try {
+        await fetch("/api/invoices/reconcile", { method: "POST", cache: "no-store" });
+      } catch {
+        /* silent — best-effort */
+      }
+    }
+
     refreshPayments();
     refreshInvoices();
     setShowPayment(false);
   }
 
-  const totalSettled = payments
-    .filter((p) => p.status === "settled")
-    .reduce((sum, p) => sum + p.amount, 0);
+  // Total-settled is reported from two sources so the number is right
+  // even if one side lags: payments-row sums PLUS invoice-status sums.
+  // De-dup by invoice id so a payment and its paid invoice aren't counted
+  // twice. Previously we only counted payments with status="settled" which
+  // missed rows where status="completed" (older writes) or where the
+  // payment row was never inserted but the invoice was flipped to paid
+  // by the reconcile endpoint.
+  const totalSettled = (() => {
+    let sum = 0;
+    const countedInvoices = new Set<string>();
+    for (const p of payments) {
+      // The Payment type lists a restricted status enum, but the API
+      // writes "settled" / "completed" on real payments. Compare via
+      // string cast so new statuses (the ones we actually write) match.
+      const s = String(p.status);
+      if (s !== "settled" && s !== "completed") continue;
+      sum += p.amount || 0;
+      if (p.invoiceId) countedInvoices.add(p.invoiceId);
+    }
+    const invArr = (invoices as Array<Invoice & { total_micro?: number }>);
+    for (const inv of invArr) {
+      if (inv.status !== "paid" && inv.status !== "settled") continue;
+      if (countedInvoices.has(inv.id)) continue;
+      sum += inv.amount ?? inv.total_micro ?? 0;
+    }
+    return sum;
+  })();
 
   const zkProofCount = payments.filter((p) => p.zkProof).length;
 
