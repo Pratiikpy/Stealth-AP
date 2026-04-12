@@ -1,20 +1,29 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 /**
- * Generic data fetching hook.
- * Tries to fetch from API, falls back to mock data if Supabase
- * isn't configured or returns an error.
+ * Generic data-fetching hook.
  *
- * This lets the app work in:
- * - Demo mode (no Supabase) — shows mock data
- * - Production mode (Supabase connected) — shows real data
+ * Behavior:
+ *  - On mount, fetches from `apiPath`.
+ *  - On success (including an empty array): stores the data, marks `isReal`.
+ *  - On failure: leaves `data` as-is (initial or previously-successful),
+ *    sets `error`, marks `isReal=false`. Never clobbers real data with the
+ *    caller's `initialValue` — that path previously flashed mock fixtures
+ *    into users' dashboards whenever the API hiccuped.
+ *
+ * Critical: `initialValue` is NOT tracked in the fetch callback's deps.
+ * Callers pass freshly-constructed values like `[]` every render, and
+ * including those in deps caused an infinite fetch loop (new ref → new
+ * callback → new effect → new fetch → new render → repeat, presenting
+ * as a blinking UI). We snapshot the initial value in a ref so it stays
+ * stable for the lifetime of the component.
  */
 export function useData<T>(
   apiPath: string,
-  mockData: T,
-  options?: { enabled?: boolean }
+  initialValue: T,
+  options?: { enabled?: boolean },
 ): {
   data: T;
   loading: boolean;
@@ -22,7 +31,10 @@ export function useData<T>(
   refresh: () => void;
   isReal: boolean;
 } {
-  const [data, setData] = useState<T>(mockData);
+  // Freeze the initial value on first render so component re-renders that
+  // pass `[]` every time don't retrigger the fetch callback.
+  const initialRef = useRef(initialValue);
+  const [data, setData] = useState<T>(initialRef.current);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isReal, setIsReal] = useState(false);
@@ -38,35 +50,24 @@ export function useData<T>(
     setError(null);
 
     try {
-      // cache: "no-store" prevents the browser from serving a stale
-      // response after we mutate server-side state (e.g. after saving a
-      // vendor address, we refetch invoices — without this, the refetch
-      // could hit the browser cache and return the pre-save join).
+      // cache: "no-store" — we mutate server state (pay, PATCH vendor, etc.)
+      // and must see fresh reads after any mutation. Browser cache would
+      // serve a stale join and cause "why is my saved address gone" bugs.
       const res = await fetch(apiPath, { cache: "no-store" });
-
-      if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
-      }
-
+      if (!res.ok) throw new Error(`API error: ${res.status}`);
       const json = await res.json();
       const result = json.data ?? json;
-
-      // Any successful API response is real data, even if empty
       setData(result as T);
       setIsReal(true);
     } catch (err) {
-      // Error path — do NOT clobber the current data with the caller's
-      // initialValue. Previously this line reset to `mockData`, which
-      // caused fake invoices / vendors to flash onto dashboard cards any
-      // time the API hiccuped. Pages should pass an empty-shape initial
-      // value (e.g. `[]`) so the worst case is an empty state, not
-      // fictional content pretending to be the user's data.
+      // Keep whatever data we had (initial or last success). Set the error
+      // so the UI can surface it; don't lie with reset-to-initial.
       setIsReal(false);
       setError(err instanceof Error ? err.message : "Failed to fetch data");
     } finally {
       setLoading(false);
     }
-  }, [apiPath, enabled, mockData]);
+  }, [apiPath, enabled]); // <-- initialValue intentionally omitted
 
   useEffect(() => {
     fetchData();

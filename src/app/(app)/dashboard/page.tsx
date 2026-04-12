@@ -49,11 +49,19 @@ const invoiceColumns: Column<Invoice>[] = [
 ];
 
 export default function DashboardPage() {
-  const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=8", []);
+  // Fetch the full invoice set (up to the DB default of 200) so totals /
+  // counts reflect ALL user invoices, not just the eight we happen to show
+  // in "Recent." Previously the stat cards were summing over a capped
+  // window, so a paid invoice beyond index 8 would never appear in
+  // "Total Settled" even though it was paid.
+  const { data: invoices, loading, isReal } = useData<Invoice[]>("/api/invoices?limit=200", []);
+  // The "Recent Invoices" card shows the eight most-recent; the list is
+  // already sorted DESC by created_at at the API layer.
+  const recentInvoices = invoices.slice(0, 8);
 
   const pendingCount = invoices.filter((i) => i.status === "pending").length;
   const approvedCount = invoices.filter((i) => i.status === "approved").length;
-  const activeVendorSet = new Set(invoices.map((i) => i.vendorId));
+  const activeVendorSet = new Set(invoices.map((i) => i.vendorId).filter(Boolean));
   const totalPayable = invoices
     .filter((i) => i.status === "pending" || i.status === "approved")
     .reduce((sum, i) => sum + i.amount, 0);
@@ -147,7 +155,7 @@ export default function DashboardPage() {
           <div className="bg-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] p-0 overflow-hidden">
             <DataTable
               columns={invoiceColumns}
-              data={invoices}
+              data={recentInvoices}
               getRowKey={(row: Invoice) => row.id}
             />
           </div>
