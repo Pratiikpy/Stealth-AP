@@ -146,10 +146,63 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  } catch {
+  } catch (err) {
+    console.error("[approvals POST] unhandled", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "Failed to process approval" },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * PATCH /api/approvals — attach on-chain metadata to an approval row
+ * (the tx hash written by stealthap_wf_v2::approve_private). Called by the
+ * approvals page AFTER the on-chain commitment succeeds, so the DB row can
+ * be cross-referenced against the explorer.
+ */
+export async function PATCH(request: NextRequest) {
+  try {
+    const supabase = await createServerSupabase();
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    const body = await request.json();
+    if (!body.id) {
+      return NextResponse.json({ error: "Missing approval id" }, { status: 400 });
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (body.aleo_tx_id) updates.aleo_tx_id = body.aleo_tx_id;
+    if (body.nonce) updates.nonce = body.nonce;
+
+    if (Object.keys(updates).length === 0) {
+      return NextResponse.json({ error: "No patchable fields provided" }, { status: 400 });
+    }
+
+    // Only the approver of record can stamp on-chain metadata — prevents a
+    // malicious caller from attributing someone else's approval tx.
+    const { data, error } = await supabase
+      .from("approvals")
+      .update(updates)
+      .eq("id", body.id)
+      .eq("approver_id", user.id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("[approvals PATCH] update failed", { userId: user.id, approvalId: body.id, err: error.message });
+      return NextResponse.json({ error: "Failed to update approval" }, { status: 500 });
+    }
+    if (!data) {
+      return NextResponse.json({ error: "Approval not found" }, { status: 404 });
+    }
+    return NextResponse.json({ data });
+  } catch (err) {
+    console.error("[approvals PATCH] unhandled", err instanceof Error ? err.message : err);
+    return NextResponse.json({ error: "Failed to update approval" }, { status: 500 });
   }
 }

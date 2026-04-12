@@ -12,6 +12,9 @@ import { motion } from "framer-motion";
 import { Shield, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import type { Approval, Invoice } from "@/lib/types";
+import { useWalletStore } from "@/stores/wallet-store";
+import { approvePrivate } from "@/lib/aleo/programs/workflow";
+import { generateNonce, hashToField } from "@/lib/crypto";
 
 function urgencyColor(amount: number): string {
   return amount > 100_000_000_000 ? "bg-red-600" : "bg-yellow-500";
@@ -40,8 +43,8 @@ export default function ApprovalsPage() {
     async (approvalId: string, action: "approve" | "reject") => {
       setActioning(approvalId);
       try {
-        // Update DB — approval state tracked off-chain
-        // Real on-chain privacy happens at payment settlement (mark_paid)
+        // Step 1 — DB write. Always happens, even if the on-chain commitment
+        // below fails, so the audit trail reflects user intent.
         const res = await fetch("/api/approvals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -55,15 +58,64 @@ export default function ApprovalsPage() {
         refreshApprovals();
         toastSuccess(
           action === "approve" ? "Invoice approved" : "Invoice rejected",
-          action === "approve" ? "Ready for private settlement" : undefined
+          action === "approve" ? "Committing on-chain…" : undefined,
         );
+
+        // Step 2 — for approvals only, fire stealthap_wf_v2.aleo::approve_private.
+        // This writes a ZK commitment on-chain without revealing the approver's
+        // identity or which invoice. Non-blocking: the DB record is already
+        // updated, so a failed on-chain tx doesn't undo the approval — we
+        // just toast and leave the aleo_tx_id null on the row.
+        if (action === "approve") {
+          const approval = approvals.find((a) => a.id === approvalId);
+          if (!approval) return;
+          const { connected } = useWalletStore.getState();
+          if (!connected) {
+            toast.info("Wallet not connected — approval saved off-chain only.");
+            return;
+          }
+
+          try {
+            // Derive invoice_id EXACTLY as payment-flow.tsx does
+            // (hashToField(`${invoice.id}:${invoice.invoice_number}`)) so the
+            // wf_v2 commitment key matches the pay_v2 finalize key. If we
+            // change one derivation and forget the other, the on-chain
+            // story breaks silently: the approve_private record wouldn't
+            // be observable from the payment's vantage.
+            const inv = invoices.find((i) => i.id === approval.invoiceId);
+            const invoiceNumber = (inv as Invoice & { invoice_number?: string })?.invoice_number || inv?.id || approval.invoiceId;
+            const invoiceIdField = await hashToField(`${approval.invoiceId}:${invoiceNumber}`);
+            const nonce = generateNonce();
+
+            const txResult = await approvePrivate(invoiceIdField, nonce);
+            if (txResult.transactionId) {
+              await fetch("/api/approvals", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  id: approvalId,
+                  aleo_tx_id: txResult.transactionId,
+                }),
+              });
+              toastSuccess(
+                "Approval committed on-chain",
+                `TX: ${txResult.transactionId.slice(0, 16)}…`,
+              );
+            } else {
+              toast.info("On-chain commitment skipped — wallet rejected or not configured.");
+            }
+          } catch (onChainErr) {
+            console.warn("[approvals] on-chain commit failed, DB record retained", onChainErr);
+            toast.info("On-chain commitment failed — approval saved off-chain.");
+          }
+        }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Action failed");
       } finally {
         setActioning(null);
       }
     },
-    [refreshApprovals]
+    [refreshApprovals, approvals, invoices],
   );
 
   return (
