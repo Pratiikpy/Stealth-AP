@@ -17,8 +17,8 @@ import { toast } from "sonner";
 import { formatMicro } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
-import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance } from "@/lib/aleo/records";
-import { getMappingValue } from "@/lib/aleo/client";
+import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent } from "@/lib/aleo/records";
+import { getMappingValue, getTransaction } from "@/lib/aleo/client";
 import { generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { InvoiceRow as Invoice, CurrencyFlag } from "@/types";
 
@@ -120,6 +120,47 @@ export function PaymentFlow({
   const aleoTx = useAleoTransaction();
 
   /**
+   * Poll the Aleo chain for a tx to be accepted, then auto-retry the pay
+   * flow. Used after a prerequisite tx (credits.aleo::join or
+   * transfer_public_to_private) — the user should NOT have to manually
+   * click Pay again once the on-chain prep is done.
+   *
+   * Polls up to ~3 min (36 attempts × 5s). Returns true if the tx got
+   * accepted and we successfully kicked off a retry; false on timeout.
+   */
+  async function waitAndRetry(txId: string | null, stageLabel: string): Promise<boolean> {
+    if (!txId) return false;
+    setProofChecklist([`${stageLabel} submitted — waiting for confirmation (up to 3 min)`]);
+    for (let i = 0; i < 36; i++) {
+      // Ramp the progress bar from 30% to 60% over the poll window so the
+      // user sees steady forward motion instead of a stuck UI.
+      setProgress(30 + Math.floor((i / 36) * 30));
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const tx = await getTransaction(txId);
+        const status = (tx as { status?: string })?.status;
+        if (status === "accepted" || status === "finalized") {
+          invalidateRecordCache();
+          setProofChecklist((prev) => [...prev, `${stageLabel} confirmed. Resuming payment…`]);
+          toast.success(`${stageLabel} confirmed. Paying now…`);
+          // Reset progress so the retry's own setProgress(15) isn't jarring
+          setProgress(0);
+          // Recursive call — the retry hits step 1 fresh with updated records
+          await handleConfirmPay();
+          return true;
+        }
+        if (status === "rejected" || status === "failed") {
+          toast.error(`${stageLabel} rejected on-chain`);
+          return false;
+        }
+      } catch {
+        // tx not indexed yet — keep polling
+      }
+    }
+    return false;
+  }
+
+  /**
    * Return to the review step and clear all processing UI state. Call this
    * from every early-return in the pay flow so the progress bar never stays
    * pinned at whatever value it had when we bailed.
@@ -152,6 +193,10 @@ export function PaymentFlow({
       // Sentinel passed when no ciphertext is available client-side.
       // The server-side SDK route resolves it via NetworkRecordProvider.
       let payRecordCiphertext: string = "__AUTO_RECORD__";
+      // Track the selected record's nonce so we can mark it tentatively-spent
+      // right before submitting pay_credits_private — prevents double-spend
+      // on a quick retry while the first tx is still unconfirmed.
+      let payRecordNonce: string = "";
 
       // Step 1: Try to find a private record locally (extension wallets only —
       // burner can't scan records from the browser without heavy WASM).
@@ -162,6 +207,7 @@ export function PaymentFlow({
         const payRecord = findRecordForAmount(creditsRecords, BigInt(totalMicro));
         if (payRecord) {
           payRecordCiphertext = payRecord.ciphertext;
+          payRecordNonce = payRecord.nonce;
           setProofChecklist((prev) => [...prev, "Credits record found"]);
           setProgress(40);
         } else if (creditsRecords.length >= 2) {
@@ -176,21 +222,27 @@ export function PaymentFlow({
           const topTwoSum = sorted[0].microcredits + sorted[1].microcredits;
           if (topTwoSum >= BigInt(totalMicro)) {
             const r1 = sorted[0], r2 = sorted[1];
-            toast.info(`Your largest record is ${formatMicro(Number(r1.microcredits))}. Merging two records to cover ${formatMicro(totalMicro)}...`);
+            toast.info(`Merging two records to cover ${formatMicro(totalMicro)}...`);
+            // Mark both input records as tentatively-spent so a quick retry
+            // can't double-consume them before chain confirmation.
+            markTentativelySpent([r1.nonce, r2.nonce].filter(Boolean));
             const joinResult = await aleoTx.execute(
               "credits.aleo",
               "join",
               [r1.ciphertext, r2.ciphertext],
-              { successMessage: "Records merged — wait ~2 min, then retry Pay." }
+              { successMessage: "Records merged. Continuing to payment…" }
             );
             if (joinResult.status === "failed") {
               toast.error(joinResult.error || "Failed to merge records");
               bailToReview();
               return;
             }
-            invalidateRecordCache();
-            toast.info("Wait ~2 min for chain confirmation, then click Pay.");
-            bailToReview();
+            // Auto-poll + auto-retry — user does NOT click Pay again.
+            const retried = await waitAndRetry(joinResult.transactionId, "Record merge");
+            if (!retried) {
+              toast.info("Still pending. Click Pay again in a minute.");
+              bailToReview();
+            }
             return;
           }
         }
@@ -227,7 +279,7 @@ export function PaymentFlow({
             "credits.aleo",
             "transfer_public_to_private",
             [address, `${totalMicro}u64`],
-            { successMessage: "Funds shielded — wait ~2 min, then retry Pay." }
+            { successMessage: "Funds shielded. Continuing to payment…" }
           );
 
           if (shieldResult.status === "failed") {
@@ -236,9 +288,12 @@ export function PaymentFlow({
             return;
           }
 
-          invalidateRecordCache();
-          toast.info("Wait ~2 min for chain confirmation, then click Pay.");
-          bailToReview();
+          // Auto-poll + auto-retry — user does NOT click Pay again.
+          const retried = await waitAndRetry(shieldResult.transactionId, "Shield");
+          if (!retried) {
+            toast.info("Still pending. Click Pay again in a minute.");
+            bailToReview();
+          }
           return;
         }
 
@@ -263,6 +318,10 @@ export function PaymentFlow({
 
       setProofChecklist((prev) => [...prev, "Generating zero-knowledge proof"]);
       setProgress(70);
+
+      // Mark the selected record as tentatively-spent — protects against a
+      // fast retry consuming the same record while this tx is unconfirmed.
+      if (payRecordNonce) markTentativelySpent([payRecordNonce]);
 
       // Contract signature: (pay_record, payee, invoice_id, amount, invoice_amount, paid_at, nonce)
       const result = await aleoTx.execute(

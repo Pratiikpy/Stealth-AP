@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createServerSupabase } from "@/lib/supabase/server";
 
 export const maxDuration = 300;
 
@@ -6,6 +7,16 @@ export async function POST(request: NextRequest) {
   const startedAt = Date.now();
   let programId = "", functionName = "";
   try {
+    // Auth guard — this endpoint accepts an Aleo private key in the body to
+    // generate a proof server-side for burner-wallet flows. Without auth any
+    // caller could hit it and have us broadcast on behalf of an arbitrary
+    // key they submit. Require a logged-in Supabase user.
+    const supabase = await createServerSupabase();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
     const body = await request.json();
     programId = body.programId;
     functionName = body.functionName;

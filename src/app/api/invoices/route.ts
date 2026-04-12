@@ -3,6 +3,7 @@ import { createServerSupabase } from "@/lib/supabase/server";
 import { ensureProfile } from "@/lib/supabase/ensure-profile";
 
 export async function GET(request: NextRequest) {
+  const startedAt = Date.now();
   try {
     const supabase = await createServerSupabase();
 
@@ -11,13 +12,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { searchParams } = new URL(request.url);
+    // request.nextUrl returns a NextURL; its searchParams property is a
+    // synchronous URLSearchParams. The Next.js 16 async-searchParams change
+    // only affects page-prop searchParams, not NextRequest.
+    const sp = request.nextUrl.searchParams;
 
-    const status = searchParams.get("status") || "all";
-    const search = searchParams.get("search") || "";
+    const status = sp.get("status") || "all";
+    const search = sp.get("search") || "";
     const cleanSearch = search?.replace(/[%_(),.]/g, '') || '';
-    const limit = parseInt(searchParams.get("limit") || "50");
-    const offset = parseInt(searchParams.get("offset") || "0");
+    const limit = parseInt(sp.get("limit") || "50");
+    const offset = parseInt(sp.get("offset") || "0");
 
     let query = supabase
       .from("invoices")
@@ -41,11 +45,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    // Transform DB rows to match frontend Invoice type (camelCase)
+    // Transform DB rows to match frontend Invoice type (camelCase). ALSO keep
+    // the snake_case `vendor_id` and nested `vendors` join — the payment-flow
+    // code reads `firstInv.vendor_id` + `firstInv.vendors.payment_address`
+    // directly when calling PATCH /api/vendors. Without these, the vendor
+    // address PATCH silently no-ops and the user is re-asked on every
+    // payment for the same vendor.
     const transformed = (data || []).map((row: Record<string, unknown>) => ({
       id: row.invoice_number || row.id,
       vendorId: row.vendor_id || "",
+      vendor_id: row.vendor_id || "",
       vendorName: (row.vendors as Record<string, string>)?.name || (row.extracted_data as Record<string, string>)?.vendor_name || "",
+      vendors: row.vendors || null,
       amount: (row.amount_micro as number) || 0,
       token: row.token || "ALEO",
       status: row.status || "draft",
@@ -54,12 +65,15 @@ export async function GET(request: NextRequest) {
       description: (row.extracted_data as Record<string, string>)?.notes || "",
       approvalChain: [],
       txHash: row.aleo_tx_id || undefined,
-      // Keep raw fields for DB operations
+      invoice_hash: row.invoice_hash || null,
+      total_micro: (row.total_amount_micro as number) || (row.amount_micro as number) || 0,
       _raw: row,
     }));
 
+    console.log("[invoices GET]", { userId: user.id, count, ms: Date.now() - startedAt });
     return NextResponse.json({ data: transformed, count });
   } catch (err) {
+    console.error("[invoices GET] failed", { ms: Date.now() - startedAt, err: err instanceof Error ? err.message : err });
     return NextResponse.json(
       { error: "Failed to fetch invoices" },
       { status: 500 }
@@ -133,9 +147,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    console.log("[invoices POST] created", { invoiceId: data?.id });
     return NextResponse.json({ data }, { status: 201 });
   } catch (err) {
-    console.log("[StealthAP] Invoice POST catch:", err instanceof Error ? err.message : err);
+    console.error("[invoices POST] failed", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to create invoice" },
       { status: 500 }
@@ -191,6 +206,7 @@ export async function PATCH(request: NextRequest) {
 
     return NextResponse.json({ data });
   } catch (err) {
+    console.error("[invoices PATCH] failed", err instanceof Error ? err.message : err);
     return NextResponse.json(
       { error: "Failed to update invoice" },
       { status: 500 }

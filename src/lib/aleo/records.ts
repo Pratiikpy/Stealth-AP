@@ -38,6 +38,39 @@ let lastScanTime = 0;
 const CACHE_TTL_MS = 30_000; // 30 seconds
 
 /**
+ * Tentatively-spent record nonces. When we submit a tx that consumes a
+ * record, we add the record's nonce here so the next `findRecordForAmount`
+ * call skips it — even though the wallet still reports `spent: false` until
+ * the tx confirms on-chain (~2 min). Without this, users who click Pay twice
+ * in quick succession get a silent double-spend rejection.
+ *
+ * Entries expire after 5 minutes (chain will have confirmed by then, and
+ * the wallet's authoritative spent flag takes over).
+ */
+const tentativelySpent = new Map<string, number>();
+const TENTATIVE_TTL_MS = 5 * 60_000;
+
+function pruneTentative() {
+  const now = Date.now();
+  for (const [nonce, timestamp] of tentativelySpent) {
+    if (now - timestamp > TENTATIVE_TTL_MS) tentativelySpent.delete(nonce);
+  }
+}
+
+export function markTentativelySpent(nonces: string[]) {
+  pruneTentative();
+  const now = Date.now();
+  for (const n of nonces) {
+    if (n) tentativelySpent.set(n, now);
+  }
+}
+
+export function isTentativelySpent(nonce: string): boolean {
+  pruneTentative();
+  return !!nonce && tentativelySpent.has(nonce);
+}
+
+/**
  * Scan wallet for records belonging to a specific program.
  * Uses the wallet adapter's requestRecords() method.
  *
@@ -143,11 +176,13 @@ export function findRecordForAmount(
   records: CreditsRecord[],
   targetAmount: bigint
 ): CreditsRecord | null {
-  // Filter records with sufficient balance
   const sufficient = records
     .filter((r) => r.microcredits >= targetAmount)
+    // Skip records we submitted in the last ~5 min — the wallet still sees
+    // them as unspent until chain confirmation, and spending twice on-chain
+    // fails.
+    .filter((r) => !isTentativelySpent(r.nonce))
     .sort((a, b) => {
-      // Sort ascending — pick smallest sufficient record
       if (a.microcredits < b.microcredits) return -1;
       if (a.microcredits > b.microcredits) return 1;
       return 0;
