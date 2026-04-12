@@ -17,7 +17,7 @@ import { motion } from "framer-motion";
 import { Plus, Upload, Sparkles, Search, CheckCircle2, PenLine } from "lucide-react";
 import { SkeletonTable } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { createInvoiceOnChain, generatePseudonym, checkDuplicateOnChain } from "@/lib/aleo/programs/invoice";
+import { createInvoiceOnChain, generatePseudonym, checkDuplicateOnChain, verifyVendorAllowlist } from "@/lib/aleo/programs/invoice";
 import { useWalletStore } from "@/stores/wallet-store";
 import { hashToField, generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { Invoice } from "@/lib/types";
@@ -352,26 +352,63 @@ export default function PayablesPage() {
             ? selectedVendor.payment_address
             : "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
 
-        // Client-side allowlist enforcement (Fix #1). If the company has
-        // committed an approved-vendor list, the current vendor must be on
-        // it before we waste gas creating an on-chain invoice record. The
-        // corresponding on-chain ZK verify_vendor_allowlist call needs
-        // BHP256-compatible Merkle proofs (post-wave WASM work); for now
-        // the allowlist is enforced locally + the root is publicly committed
-        // on-chain, which is the shape most enterprise AP allowlists have.
+        // Allowlist enforcement via on-chain ZK verification (Fix #1, real).
+        // The Settings Rules tab stores the BHP256 Merkle tree alongside the
+        // allowlist entries. Here we look up the selected vendor's index in
+        // the leaves, extract the 8-level proof path + sides, and call
+        // inv_v2::verify_vendor_allowlist. The contract's hash-climb matches
+        // our server-built tree because both use BHP256(left, right) at
+        // every node. A failed proof aborts the tx on-chain and we bail.
         try {
           const raw = localStorage.getItem("stealthap.vendor_allowlist");
           if (raw) {
-            const parsed = JSON.parse(raw) as { entries: Array<{ vendorHash: string; name: string }>; tx?: string };
-            if (parsed.tx && parsed.entries.length > 0) {
-              const onList = parsed.entries.some((e) => e.vendorHash === vendorHash);
-              if (!onList) {
+            const parsed = JSON.parse(raw) as {
+              entries: Array<{ vendorHash: string; name: string }>;
+              tx?: string;
+              root?: string;
+              tree?: string[][];
+            };
+            if (parsed.tx && parsed.entries && parsed.entries.length > 0 && parsed.tree && parsed.root) {
+              // Leaves were sorted by vendorHash at tree-build time. Mirror
+              // that sort locally to find the current vendor's index.
+              const sortedEntries = [...parsed.entries].sort((a, b) => (a.vendorHash > b.vendorHash ? 1 : -1));
+              const leafIndex = sortedEntries.findIndex((e) => e.vendorHash === vendorHash);
+              if (leafIndex < 0) {
                 toast.error(`${selectedVendor.name} is not on the committed vendor allowlist. Add them in Settings → Rules first.`);
-                return; // invoice already saved to DB; bail before on-chain
+                return;
+              }
+              // Extract proof: at each level, the sibling field + a side bit
+              // (true = vendor is on the left, false = on the right).
+              const path: string[] = [];
+              const sides: boolean[] = [];
+              let idx = leafIndex;
+              for (let d = 0; d < 8; d++) {
+                const level = parsed.tree[d] ?? [];
+                const siblingIdx = idx ^ 1; // flip last bit = sibling
+                const sibling = level[siblingIdx] ?? "0";
+                path.push(sibling);
+                sides.push((idx & 1) === 0); // true if vendor is the LEFT child
+                idx = Math.floor(idx / 2);
+              }
+              toast.info("Verifying vendor in allowlist via ZK proof…");
+              const verifyRes = await verifyVendorAllowlist({
+                vendorHash,
+                merkleRoot: parsed.root,
+                proofPath: path,
+                proofSides: sides,
+              });
+              if (verifyRes.status === "failed") {
+                toast.error(
+                  `Allowlist ZK verification failed for ${selectedVendor.name}. ${verifyRes.error ?? ""}`,
+                  { duration: 10000 },
+                );
+                return;
               }
             }
           }
-        } catch { /* no allowlist configured — skip */ }
+        } catch (err) {
+          console.warn("[payables] allowlist verify threw, continuing", err);
+        }
 
         // On-chain duplicate check (Fix #5). Compute a content hash from
         // invoice_number + vendor + amount so the same invoice cannot be

@@ -113,7 +113,12 @@ export default function SettingsPage() {
     try {
       const t = JSON.parse(localStorage.getItem(THRESHOLDS_KEY) || "[]") as ThresholdRule[];
       const l = JSON.parse(localStorage.getItem(LIMITS_KEY) || "[]") as SpendingLimit[];
-      const a = JSON.parse(localStorage.getItem(ALLOWLIST_KEY) || '{"entries":[]}') as { entries: AllowlistEntry[]; root?: string; tx?: string };
+      const a = JSON.parse(localStorage.getItem(ALLOWLIST_KEY) || '{"entries":[]}') as {
+        entries: AllowlistEntry[];
+        root?: string;
+        tx?: string;
+        tree?: string[][];
+      };
       if (Array.isArray(t)) setThresholds(t);
       if (Array.isArray(l)) setLimits(l);
       if (Array.isArray(a.entries)) setAllowlist(a.entries);
@@ -124,26 +129,38 @@ export default function SettingsPage() {
     }
   }, []);
 
-  function persistAllowlist(entries: AllowlistEntry[], root: string, tx: string) {
+  function persistAllowlist(entries: AllowlistEntry[], root: string, tx: string, tree: string[][]) {
     setAllowlist(entries);
     setAllowlistRoot(root);
     setAllowlistTx(tx);
     try {
-      localStorage.setItem(ALLOWLIST_KEY, JSON.stringify({ entries, root, tx }));
+      // Store the FULL tree so the payables page can extract single-vendor
+      // proofs without re-invoking the BHP256 merkle endpoint on every
+      // invoice creation. Tree is <= 511 fields × ~78 chars = ~40KB, well
+      // under localStorage 5MB quota.
+      localStorage.setItem(ALLOWLIST_KEY, JSON.stringify({ entries, root, tx, tree }));
     } catch {}
   }
 
   /**
-   * Compute a deterministic digest of the vendor list. Sort by vendorHash so
-   * the digest is stable regardless of insertion order. The on-chain contract
-   * stores this as the Merkle root; true BHP256 Merkle tree construction for
-   * single-vendor proofs is a post-wave WASM integration.
+   * Build the BHP256 Merkle tree for the current vendor list via the
+   * server-side /api/aleo/merkle endpoint. The returned root matches what
+   * the on-chain `verify_vendor_allowlist` function will compute when a
+   * client later presents a proof of membership. Returns { root, tree }
+   * where tree is [leaves, level_1, …, level_8 = [root]].
    */
-  async function computeAllowlistDigest(entries: AllowlistEntry[]): Promise<string> {
-    if (entries.length === 0) return "0";
+  async function computeAllowlistRoot(entries: AllowlistEntry[]): Promise<{ root: string; tree: string[][] }> {
+    if (entries.length === 0) return { root: "0", tree: [["0"]] };
     const sorted = [...entries].sort((a, b) => (a.vendorHash > b.vendorHash ? 1 : -1));
-    const joined = sorted.map((e) => e.vendorHash).join(":");
-    return await hashToField(joined);
+    const leaves = sorted.map((e) => e.vendorHash);
+    const res = await fetch("/api/aleo/merkle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      cache: "no-store",
+      body: JSON.stringify({ leaves }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || "merkle computation failed");
+    return await res.json();
   }
 
   async function addAllowlistEntry() {
@@ -155,15 +172,24 @@ export default function SettingsPage() {
       return;
     }
     const entries = [...allowlist, { id: crypto.randomUUID(), name, vendorHash }];
-    const root = await computeAllowlistDigest(entries);
-    persistAllowlist(entries, root, ""); // root changed → previous tx is stale
+    try {
+      const { root, tree } = await computeAllowlistRoot(entries);
+      persistAllowlist(entries, root, "", tree); // root changed → previous tx is stale
+    } catch (err) {
+      toastError("Merkle tree build failed", err instanceof Error ? err.message : String(err));
+      return;
+    }
     setNewAllowlistName("");
   }
 
   async function removeAllowlistEntry(id: string) {
     const entries = allowlist.filter((e) => e.id !== id);
-    const root = await computeAllowlistDigest(entries);
-    persistAllowlist(entries, root, "");
+    try {
+      const { root, tree } = await computeAllowlistRoot(entries);
+      persistAllowlist(entries, root, "", tree);
+    } catch (err) {
+      toastError("Merkle tree build failed", err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function commitAllowlist() {
@@ -184,7 +210,10 @@ export default function SettingsPage() {
         nonce: generateNonce(),
       });
       if (result.transactionId) {
-        persistAllowlist(allowlist, allowlistRoot, result.transactionId);
+        // Re-read the cached tree so persistAllowlist keeps it attached to
+        // the new tx hash. Without this, the tree would be wiped on commit.
+        const cached = JSON.parse(localStorage.getItem(ALLOWLIST_KEY) || '{"tree":[]}') as { tree?: string[][] };
+        persistAllowlist(allowlist, allowlistRoot, result.transactionId, cached.tree ?? []);
         toastSuccess("Allowlist committed on-chain", `TX: ${result.transactionId.slice(0, 16)}…`);
       } else {
         toastError("On-chain commitment returned no tx id");
