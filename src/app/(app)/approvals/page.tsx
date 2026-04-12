@@ -11,9 +11,6 @@ import { MoneyDisplay } from "@/components/ui/money-display";
 import { motion } from "framer-motion";
 import { Shield, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
-import { approvePrivate, rejectInvoiceOnChain } from "@/lib/aleo/programs/workflow";
-import { useWalletStore } from "@/stores/wallet-store";
-import { generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { Approval, Invoice } from "@/lib/types";
 
 function urgencyColor(amount: number): string {
@@ -41,43 +38,10 @@ export default function ApprovalsPage() {
 
   const handleAction = useCallback(
     async (approvalId: string, action: "approve" | "reject") => {
-      const { connected } = useWalletStore.getState();
-
-      // Require wallet connection
-      if (!connected) {
-        toast.error("Connect your wallet first to " + action + " invoices.");
-        return;
-      }
-
       setActioning(approvalId);
       try {
-        // Step 1: On-chain FIRST — wallet must sign before DB update
-        // executeTransaction handles routing (extension -> SDK -> DPS -> error)
-        const approval = approvals.find((a) => a.id === approvalId);
-        const invoiceId = approval?.invoiceId ?? approvalId;
-
-        if (action === "approve") {
-          const nonce = generateNonce();
-          const txResult = await approvePrivate(invoiceId, nonce);
-          if (txResult.status === "failed") {
-            toast.error(txResult.error || "On-chain approval failed");
-            setActioning(null);
-            return;
-          }
-          if (txResult.transactionId) {
-            toastSuccess("Signed on-chain", `TX: ${txResult.transactionId.slice(0, 16)}...`);
-          }
-        } else {
-          const nonce = generateNonce();
-          const txResult = await rejectInvoiceOnChain(invoiceId, nonce, nowTimestamp());
-          if (txResult.status === "failed") {
-            toast.error(txResult.error || "On-chain rejection failed");
-            setActioning(null);
-            return;
-          }
-        }
-
-        // Step 2: Update DB after on-chain succeeds
+        // Update DB — approval state tracked off-chain
+        // Real on-chain privacy happens at payment settlement (mark_paid)
         const res = await fetch("/api/approvals", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -89,14 +53,17 @@ export default function ApprovalsPage() {
         }
 
         refreshApprovals();
-        toastSuccess(action === "approve" ? "Invoice approved" : "Invoice rejected");
+        toastSuccess(
+          action === "approve" ? "Invoice approved" : "Invoice rejected",
+          action === "approve" ? "Ready for private settlement" : undefined
+        );
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Action failed");
       } finally {
         setActioning(null);
       }
     },
-    [refreshApprovals, approvals]
+    [refreshApprovals]
   );
 
   return (
