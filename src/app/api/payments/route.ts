@@ -139,19 +139,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to record payment" }, { status: 500 });
     }
 
-    // Flip ALL referenced invoices to "paid" — this is why paid invoices
-    // kept showing in Select-to-Pay before. Previously the code only did
-    // this when body.invoice_id was set (singular), which the frontend
-    // never sent.
+    // Flip ALL referenced invoices to "paid". Also filter by company_id so
+    // RLS-missing scenarios don't silently no-op. If the update touches
+    // zero rows (e.g. permissions block), we log it explicitly so the
+    // symptom "Total Settled stuck at 0" is diagnosable.
     if (invoiceIds.length > 0) {
-      await supabase
+      const { data: updated, error: updErr } = await supabase
         .from("invoices")
         .update({
           status: "paid",
           paid_at: new Date().toISOString(),
           aleo_tx_id: txHash,
         })
-        .in("id", invoiceIds);
+        .in("id", invoiceIds)
+        .eq("company_id", profile.company_id)
+        .select("id");
+      if (updErr) {
+        console.error("[payments POST] invoice status update failed", { userId: user.id, err: updErr.message });
+      } else if (!updated || updated.length === 0) {
+        console.warn("[payments POST] invoice status update hit 0 rows", { userId: user.id, invoiceIds, company_id: profile.company_id });
+      } else {
+        console.log("[payments POST] flipped invoices to paid", { count: updated.length });
+      }
     }
 
     console.log("[payments POST] settled", { userId: user.id, invoiceIds, txHash, count: rows.length });

@@ -71,10 +71,19 @@ export function PaymentFlow({
     payment_address?: string | null;
     vendor_id?: string;
   };
+  // Keys for the localStorage payee cache. Keyed by vendor name (lowercased)
+  // so a user who pastes "aleo1…" once for "Acme Corp" never re-enters it,
+  // regardless of whether vendor_id is linked on the invoice row.
+  const vendorCacheKey = (firstInv?.vendor_name || "").trim().toLowerCase();
+  const PAYEE_CACHE_PREFIX = "stealthap.payee.vendor.";
+
   const existingAddress =
     resolvedAddress ||
     firstInv?.vendors?.payment_address ||
     firstInv?.payment_address ||
+    (typeof window !== "undefined" && vendorCacheKey
+      ? localStorage.getItem(PAYEE_CACHE_PREFIX + vendorCacheKey)
+      : null) ||
     null;
   const needsAddress = !existingAddress || !existingAddress.startsWith("aleo1");
 
@@ -85,7 +94,6 @@ export function PaymentFlow({
   // This read is cheap (one row) and always returns the current value.
   useEffect(() => {
     if (resolvedAddress) return; // panel session already set one
-    if (!firstInv?.vendor_id) return;
     if (existingAddress && existingAddress.startsWith("aleo1")) return;
     let cancelled = false;
     (async () => {
@@ -94,16 +102,28 @@ export function PaymentFlow({
         if (!res.ok) return;
         const json = await res.json();
         const vendors = (json.data || []) as Array<{ id: string; payment_address?: string; name?: string }>;
-        const match = vendors.find((v) => v.id === firstInv.vendor_id);
+        // Match by id first (if invoice has vendor_id), else by name — handles
+        // orphan invoices whose vendor link is missing but whose vendor name
+        // maps to an existing vendor record.
+        const matchById = firstInv?.vendor_id
+          ? vendors.find((v) => v.id === firstInv.vendor_id)
+          : null;
+        const matchByName = !matchById && vendorCacheKey
+          ? vendors.find((v) => (v.name || "").toLowerCase() === vendorCacheKey)
+          : null;
+        const match = matchById || matchByName;
         if (!cancelled && match?.payment_address && match.payment_address.startsWith("aleo1")) {
           setResolvedAddress(match.payment_address);
+          // Also cache to localStorage so subsequent renders don't need to
+          // re-fetch — especially useful for offline demo scenarios.
+          try { localStorage.setItem(PAYEE_CACHE_PREFIX + vendorCacheKey, match.payment_address); } catch {}
         }
       } catch {
         // fetch failure here is non-fatal — the UI input prompt still works
       }
     })();
     return () => { cancelled = true; };
-  }, [firstInv?.vendor_id, resolvedAddress, existingAddress]);
+  }, [firstInv?.vendor_id, resolvedAddress, existingAddress, vendorCacheKey]);
 
   async function saveVendorAddress() {
     const addr = addressInput.trim();
@@ -111,10 +131,19 @@ export function PaymentFlow({
       toast.error("Address must start with aleo1 and be ~63 characters");
       return;
     }
+    // ALWAYS cache to localStorage keyed by vendor name — this is the
+    // persistence guarantee for "I entered it once, never ask again." The
+    // DB PATCH below is the canonical write, but localStorage means a
+    // failed or skipped PATCH still gives the user the never-re-ask UX.
+    if (vendorCacheKey) {
+      try { localStorage.setItem(PAYEE_CACHE_PREFIX + vendorCacheKey, addr); } catch {}
+    }
     if (!firstInv.vendor_id) {
-      // No vendor_id — just use the address locally for this payment
+      // No vendor_id link. Cache is already set; resolve locally for this
+      // session. The next open of any invoice with the same vendor name
+      // will read from localStorage and skip the prompt entirely.
       setResolvedAddress(addr);
-      toast.success("Address set for this payment");
+      toast.success("Address saved — won't ask again for this vendor");
       return;
     }
     setSavingAddress(true);
