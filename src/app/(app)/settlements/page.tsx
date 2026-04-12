@@ -88,14 +88,32 @@ export default function SettlementsPage() {
   const [showInvoiceSelect, setShowInvoiceSelect] = useState(false);
   const [selectedInvoices, setSelectedInvoices] = useState<InvoiceRow[]>([]);
 
-  // Get approved invoices that are ready for payment
+  // The API attaches the joined `vendors` row on `_raw`. Use it to find
+  // each invoice's payee address for filtering/payment.
+  type InvoiceWithRaw = Invoice & {
+    _raw?: { vendors?: { name?: string; payment_address?: string } };
+  };
+
+  function getPaymentAddress(inv: Invoice): string | null {
+    const raw = (inv as InvoiceWithRaw)._raw;
+    return raw?.vendors?.payment_address || null;
+  }
+
+  // Get approved invoices that are ready for payment — only those with a
+  // real vendor payment address (vendor-first flow).
   const approvedInvoices = useMemo(
-    () => invoices.filter((inv) => inv.status === "approved"),
-    [invoices]
+    () =>
+      invoices.filter(
+        (inv) =>
+          inv.status === "approved" &&
+          (!isReal || !!getPaymentAddress(inv))
+      ),
+    [invoices, isReal]
   );
 
   function handleSelectInvoice(inv: Invoice) {
-    const row: InvoiceRow = {
+    const payeeAddress = getPaymentAddress(inv);
+    const row: InvoiceRow & { vendors?: { payment_address?: string; name?: string } } = {
       id: inv.id,
       company_id: "",
       invoice_number: inv.id,
@@ -121,6 +139,10 @@ export default function SettlementsPage() {
       invoice_hash: inv.txHash ?? null,
       created_at: inv.createdAt,
       updated_at: inv.createdAt,
+      // Forward the joined vendor info so PaymentFlow can resolve the payee
+      vendors: payeeAddress
+        ? { payment_address: payeeAddress, name: inv.vendorName }
+        : undefined,
     };
     setSelectedInvoices([row]);
     setShowInvoiceSelect(false);

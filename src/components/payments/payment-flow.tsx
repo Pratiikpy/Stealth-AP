@@ -80,11 +80,23 @@ export function PaymentFlow({
 
       // Execute real transaction if wallet connected, otherwise demo
       if (connected && payRecord) {
-        // Use the vendor's Aleo payment address if available on the invoice,
-        // otherwise fall back to the zero address (will be resolved via vendor lookup)
-        const payeeAddress = invoices[0].vendor_name.startsWith("aleo1")
-          ? invoices[0].vendor_name
-          : "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
+        // Resolve payee address from the invoice's joined vendor row.
+        // Invoices now always link to a vendor (vendor-first flow), so
+        // payment_address comes from `invoices.vendors.payment_address`.
+        const firstInv = invoices[0] as typeof invoices[0] & {
+          vendors?: { payment_address?: string | null };
+          payment_address?: string | null;
+        };
+        const payeeAddress =
+          firstInv.vendors?.payment_address ||
+          firstInv.payment_address ||
+          null;
+
+        if (!payeeAddress || !payeeAddress.startsWith("aleo1")) {
+          toast.error("Invoice has no payment address. Check vendor.");
+          setStep("review");
+          return;
+        }
 
         const result = await aleoTx.execute(
           PAYMENT_PROGRAM,

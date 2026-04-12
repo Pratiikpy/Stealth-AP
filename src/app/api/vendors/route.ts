@@ -26,7 +26,11 @@ export async function GET() {
       name: row.name || "",
       alias: (row.vendor_hash as string)?.slice(0, 12) || "",
       address: row.payment_address || "",
+      // Expose payment_address directly so the vendor-first invoice flow can
+      // use it without re-fetching the DB row.
+      payment_address: (row.payment_address as string) || "",
       category: row.category || "",
+      contact_email: (row.contact_email as string) || "",
       totalPaid: (row.total_paid_micro as number) || 0,
       invoiceCount: (row.invoice_count as number) || 0,
       lastPayment: row.created_at || "",

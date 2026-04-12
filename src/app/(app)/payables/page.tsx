@@ -10,7 +10,6 @@ import { DataTable } from "@/components/ui/data-table";
 import type { Column } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import { MoneyDisplay } from "@/components/ui/money-display";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SlidePanel } from "@/components/ui/slide-panel";
 import { FileUploadZone } from "@/components/invoices/file-upload-zone";
@@ -23,6 +22,20 @@ import { useWalletStore } from "@/stores/wallet-store";
 import { hashToField, generateNonce, nowTimestamp } from "@/lib/crypto";
 import type { Invoice } from "@/lib/types";
 import type { InvoiceExtraction } from "@/types";
+
+/**
+ * Vendor shape as returned by `GET /api/vendors`.
+ * The route transforms DB rows to include `payment_address` as a top-level
+ * field (vendor-first invoice flow relies on this). Falls back to mock
+ * vendors — we only use `id`, `name`, and `payment_address` here.
+ */
+interface VendorOption {
+  id: string;
+  name: string;
+  payment_address?: string;
+  address?: string; // mock-data shape
+  category?: string;
+}
 
 type FilterKey = "all" | "pending" | "approved" | "paid";
 
@@ -57,8 +70,10 @@ const invoiceColumns: Column<Invoice>[] = [
     key: "vendorName",
     label: "Vendor",
     sortable: true,
-    render: (row: Invoice) => (
-      <span className="font-mono text-black font-medium">{row.vendorName}</span>
+    render: (row: Invoice & { vendors?: { name?: string } }) => (
+      <span className="font-mono text-black font-medium">
+        {row.vendors?.name || row.vendorName || "—"}
+      </span>
     ),
   },
   {
@@ -138,6 +153,13 @@ function SubmitButton({ invoice, onSubmitted }: { invoice: Invoice; onSubmitted:
   );
 }
 
+const emptyNewVendor = {
+  name: "",
+  payment_address: "",
+  category: "",
+  contact_email: "",
+};
+
 export default function PayablesPage() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
   const [search, setSearch] = useState("");
@@ -148,9 +170,14 @@ export default function PayablesPage() {
   const [saving, setSaving] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
 
-  // Manual entry form state
+  // Vendor-first flow state
+  const [selectedVendor, setSelectedVendor] = useState<VendorOption | null>(null);
+  const [showNewVendor, setShowNewVendor] = useState(false);
+  const [creatingVendor, setCreatingVendor] = useState(false);
+  const [newVendor, setNewVendor] = useState(emptyNewVendor);
+
+  // Manual entry form state (no vendor_name — vendor comes from selectedVendor)
   const [manualForm, setManualForm] = useState({
-    vendor_name: "",
     invoice_number: "",
     amount: "",
     tax_amount: "",
@@ -163,7 +190,6 @@ export default function PayablesPage() {
 
   function resetManualForm() {
     setManualForm({
-      vendor_name: "",
       invoice_number: "",
       amount: "",
       tax_amount: "",
@@ -175,10 +201,61 @@ export default function PayablesPage() {
     });
   }
 
+  function resetNewVendor() {
+    setNewVendor(emptyNewVendor);
+  }
+
+  const { data: invoices, loading, isReal, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
+  const { data: vendors, refresh: refreshVendors } = useData<VendorOption[]>("/api/vendors", []);
+
+  async function createVendorInline() {
+    if (!newVendor.name.trim() || !newVendor.payment_address.trim()) return;
+    setCreatingVendor(true);
+    try {
+      const res = await fetch("/api/vendors", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newVendor.name,
+          payment_address: newVendor.payment_address,
+          category: newVendor.category || null,
+          contact_email: newVendor.contact_email || null,
+          default_token: "ALEO",
+          payment_terms: 30,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Failed" }));
+        throw new Error(err.error || "Failed to create vendor");
+      }
+      const { data } = await res.json();
+      // POST returns the raw DB row (with payment_address)
+      const created: VendorOption = {
+        id: data.id,
+        name: data.name,
+        payment_address: data.payment_address || newVendor.payment_address,
+        category: data.category || newVendor.category,
+      };
+      setSelectedVendor(created);
+      setShowNewVendor(false);
+      resetNewVendor();
+      refreshVendors();
+      toastSuccess("Vendor created");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create vendor");
+    } finally {
+      setCreatingVendor(false);
+    }
+  }
+
   function handleManualSave() {
-    // Construct extractedData from manual form fields
+    if (!selectedVendor) {
+      toast.error("Select a vendor first.");
+      return;
+    }
+    // Construct extractedData from manual form fields — vendor_name comes from selectedVendor
     const data: InvoiceExtraction = {
-      vendor_name: manualForm.vendor_name || null,
+      vendor_name: selectedVendor.name,
       invoice_number: manualForm.invoice_number || null,
       amount: parseFloat(manualForm.amount) || 0,
       tax_amount: parseFloat(manualForm.tax_amount) || 0,
@@ -191,8 +268,6 @@ export default function PayablesPage() {
     };
     setExtractedData(data);
   }
-
-  const { data: invoices, loading, isReal, refresh: refreshInvoices } = useData<Invoice[]>("/api/invoices", mockInvoices);
 
   const handleFileSelected = useCallback(async (file: File) => {
     setExtracting(true);
@@ -216,6 +291,10 @@ export default function PayablesPage() {
 
   const handleSave = useCallback(async () => {
     if (!extractedData) return;
+    if (!selectedVendor) {
+      toast.error("Select a vendor first.");
+      return;
+    }
 
     // Step 1: Require wallet connection
     const { connected, address } = useWalletStore.getState();
@@ -229,11 +308,12 @@ export default function PayablesPage() {
       const amountMicro = Math.round((extractedData.amount ?? 0) * 1_000_000);
       const taxMicro = Math.round((extractedData.tax_amount ?? 0) * 1_000_000);
 
-      // Step 2: Save to DB
+      // Step 2: Save to DB — pass vendor_id (NOT vendor_name)
       const res = await fetch("/api/invoices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          vendor_id: selectedVendor.id,
           invoice_number: extractedData.invoice_number,
           amount_micro: amountMicro,
           tax_amount_micro: taxMicro,
@@ -258,19 +338,24 @@ export default function PayablesPage() {
       const savedInvoice = await res.json();
       toastSuccess("Invoice saved");
 
-      // Step 3: Try on-chain commitment (non-blocking)
+      // Step 3: Try on-chain commitment (non-blocking) — use selected vendor's real address
       try {
         const nonce = generateNonce();
         const companyHash = await hashToField(address);
-        const vendorHash = await hashToField(extractedData.vendor_name ?? "unknown");
+        const vendorHash = await hashToField(selectedVendor.name);
         const dueDateTs = extractedData.due_date
           ? Math.floor(new Date(extractedData.due_date).getTime() / 1000)
           : nowTimestamp();
 
+        const vendorAddress =
+          selectedVendor.payment_address && selectedVendor.payment_address.startsWith("aleo1")
+            ? selectedVendor.payment_address
+            : "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc";
+
         const txResult = await createInvoiceOnChain({
           companyHash,
           vendorHash,
-          vendorAddress: "aleo1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq3ljyzc",
+          vendorAddress,
           amount: BigInt(amountMicro),
           taxAmount: BigInt(taxMicro),
           currencyFlag: 0,
@@ -302,19 +387,25 @@ export default function PayablesPage() {
       refreshInvoices();
       setShowCreate(false);
       setExtractedData(null);
+      setSelectedVendor(null);
+      setShowNewVendor(false);
+      resetNewVendor();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save invoice");
     } finally {
       setSaving(false);
     }
-  }, [extractedData, refreshInvoices]);
+  }, [extractedData, selectedVendor, refreshInvoices]);
 
   const handleClosePanel = useCallback(() => {
     setShowCreate(false);
     setExtractedData(null);
     setExtractError(null);
     setEntryMode("upload");
+    setSelectedVendor(null);
+    setShowNewVendor(false);
     resetManualForm();
+    resetNewVendor();
   }, []);
 
   const counts: Record<FilterKey, number> = useMemo(
@@ -340,6 +431,12 @@ export default function PayablesPage() {
     }
     return result;
   }, [invoices, activeFilter, search]);
+
+  const vendorNameMismatch =
+    !!extractedData &&
+    !!selectedVendor &&
+    !!extractedData.vendor_name &&
+    extractedData.vendor_name.toLowerCase() !== selectedVendor.name.toLowerCase();
 
   return (
     <motion.div
@@ -441,248 +538,345 @@ export default function PayablesPage() {
 
       {/* Invoice creation slide panel */}
       <SlidePanel open={showCreate} onClose={handleClosePanel} title="New Payable">
-        {!extractedData ? (
-          <div className="space-y-4">
-            {/* Mode toggle tabs */}
-            <div className="flex gap-0">
-              <button
-                onClick={() => setEntryMode("upload")}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
-                  entryMode === "upload"
-                    ? "bg-[#C6F15C] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                    : "bg-white text-black/50 hover:bg-[#E5E5E5]"
-                }`}
-              >
-                <Upload className="w-3 h-3" />
-                AI Upload
-              </button>
-              <button
-                onClick={() => setEntryMode("manual")}
-                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black -ml-[2px] font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
-                  entryMode === "manual"
-                    ? "bg-[#A259FF] text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                    : "bg-white text-black/50 hover:bg-[#E5E5E5]"
-                }`}
-              >
-                <PenLine className="w-3 h-3" />
-                Manual Entry
-              </button>
-            </div>
+        <div className="space-y-4">
+          {/* ── Step 1: Vendor selector — required first step ── */}
+          <div>
+            <label className="block font-mono text-xs font-bold uppercase tracking-wider text-text-3 mb-2">
+              Vendor *
+            </label>
 
-            {entryMode === "upload" ? (
+            {!selectedVendor && !showNewVendor && (
               <>
-                <p className="text-[13px] font-mono text-black/70">
-                  Upload an invoice PDF or image. AI will extract vendor, amounts, and line items automatically.
-                </p>
-                <FileUploadZone onFileSelected={handleFileSelected} loading={extracting} />
-                {extractError && (
-                  <p className="text-xs font-mono text-red-600 font-bold">{extractError}</p>
-                )}
-              </>
-            ) : (
-              /* Manual entry form */
-              <div className="space-y-3">
-                <p className="text-[13px] font-mono text-black/70">
-                  Enter invoice details manually. All fields with * are required.
-                </p>
-                <Input
-                  label="Vendor Name *"
-                  placeholder="Acme Corp"
-                  value={manualForm.vendor_name}
-                  onChange={(e) => setManualForm((f) => ({ ...f, vendor_name: e.target.value }))}
-                />
-                <Input
-                  label="Invoice Number *"
-                  placeholder="INV-001"
-                  value={manualForm.invoice_number}
-                  onChange={(e) => setManualForm((f) => ({ ...f, invoice_number: e.target.value }))}
-                />
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    label="Amount *"
-                    type="number"
-                    placeholder="0.00"
-                    value={manualForm.amount}
-                    onChange={(e) => setManualForm((f) => ({ ...f, amount: e.target.value }))}
-                  />
-                  <Input
-                    label="Tax"
-                    type="number"
-                    placeholder="0.00"
-                    value={manualForm.tax_amount}
-                    onChange={(e) => setManualForm((f) => ({ ...f, tax_amount: e.target.value }))}
-                  />
-                </div>
-
-                {/* Currency select */}
-                <div className="space-y-1.5">
-                  <label className="block font-mono text-xs font-bold uppercase tracking-wider text-text-3">
-                    Currency
-                  </label>
-                  <select
-                    value={manualForm.currency}
-                    onChange={(e) => setManualForm((f) => ({ ...f, currency: e.target.value }))}
-                    className="w-full border-2 border-black bg-white font-mono text-sm p-3 text-text-1 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all appearance-none cursor-pointer"
-                  >
-                    <option value="ALEO">ALEO</option>
-                    <option value="USDCx">USDCx</option>
-                    <option value="USAD">USAD</option>
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <Input
-                    label="Issue Date"
-                    type="date"
-                    value={manualForm.issue_date}
-                    onChange={(e) => setManualForm((f) => ({ ...f, issue_date: e.target.value }))}
-                  />
-                  <Input
-                    label="Due Date"
-                    type="date"
-                    value={manualForm.due_date}
-                    onChange={(e) => setManualForm((f) => ({ ...f, due_date: e.target.value }))}
-                  />
-                </div>
-                <Input
-                  label="PO Number"
-                  placeholder="PO-12345 (optional)"
-                  value={manualForm.po_number}
-                  onChange={(e) => setManualForm((f) => ({ ...f, po_number: e.target.value }))}
-                />
-                <Input
-                  label="Notes"
-                  placeholder="Additional notes (optional)"
-                  value={manualForm.notes}
-                  onChange={(e) => setManualForm((f) => ({ ...f, notes: e.target.value }))}
-                />
-
-                <button
-                  onClick={handleManualSave}
-                  disabled={!manualForm.vendor_name || !manualForm.invoice_number || !manualForm.amount}
-                  className="w-full bg-[#A259FF] text-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2.5 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                <select
+                  className="w-full border-2 border-black bg-white font-mono text-sm p-3"
+                  onChange={(e) => {
+                    const vendor = vendors.find((v) => v.id === e.target.value);
+                    if (vendor) setSelectedVendor(vendor);
+                  }}
+                  defaultValue=""
                 >
-                  Review & Save
+                  <option value="">Select a vendor...</option>
+                  {vendors.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setShowNewVendor(true)}
+                  className="mt-2 font-mono text-xs font-bold uppercase tracking-wider text-[#A259FF] border-b-2 border-[#A259FF] hover:opacity-70"
+                >
+                  + New Vendor
+                </button>
+              </>
+            )}
+
+            {selectedVendor && (
+              <div className="flex items-center justify-between border-2 border-black bg-[#C6F15C] p-3">
+                <div className="min-w-0">
+                  <p className="font-mono text-sm font-bold text-black truncate">{selectedVendor.name}</p>
+                  <p className="font-mono text-[10px] text-black/60 truncate">
+                    {(selectedVendor.payment_address || selectedVendor.address || "").slice(0, 24) || "no address"}
+                    {(selectedVendor.payment_address || selectedVendor.address || "").length > 24 ? "..." : ""}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setSelectedVendor(null)}
+                  className="font-mono text-xs font-bold uppercase text-black border-b-2 border-black ml-3 shrink-0"
+                >
+                  Change
                 </button>
               </div>
             )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <CheckCircle2 className="w-4 h-4 text-green-700" />
-              <p className="text-[13px] font-mono font-bold text-green-700 uppercase">
-                {entryMode === "manual" ? "Review invoice details" : "Data extracted successfully"}
-              </p>
-            </div>
-            <Input
-              label="Vendor Name"
-              value={extractedData.vendor_name ?? ""}
-              onChange={(e) =>
-                setExtractedData({ ...extractedData, vendor_name: e.target.value })
-              }
-            />
-            <Input
-              label="Invoice Number"
-              value={extractedData.invoice_number ?? ""}
-              onChange={(e) =>
-                setExtractedData({ ...extractedData, invoice_number: e.target.value })
-              }
-            />
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                label="Amount"
-                type="number"
-                value={extractedData.amount?.toString() ?? ""}
-                onChange={(e) =>
-                  setExtractedData({ ...extractedData, amount: parseFloat(e.target.value) || 0 })
-                }
-              />
-              <Input
-                label="Tax"
-                type="number"
-                value={extractedData.tax_amount?.toString() ?? ""}
-                onChange={(e) =>
-                  setExtractedData({ ...extractedData, tax_amount: parseFloat(e.target.value) || 0 })
-                }
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <Input
-                label="Issue Date"
-                type="date"
-                value={extractedData.issue_date ?? ""}
-                onChange={(e) =>
-                  setExtractedData({ ...extractedData, issue_date: e.target.value })
-                }
-              />
-              <Input
-                label="Due Date"
-                type="date"
-                value={extractedData.due_date ?? ""}
-                onChange={(e) =>
-                  setExtractedData({ ...extractedData, due_date: e.target.value })
-                }
-              />
-            </div>
-            <Input
-              label="PO Number"
-              value={extractedData.po_number ?? ""}
-              onChange={(e) =>
-                setExtractedData({ ...extractedData, po_number: e.target.value })
-              }
-            />
-            <Input
-              label="Currency"
-              value={extractedData.currency ?? ""}
-              onChange={(e) =>
-                setExtractedData({ ...extractedData, currency: e.target.value })
-              }
-            />
 
-            {/* Confidence scores */}
-            {extractedData.confidence && (
-              <div className="border-2 border-black bg-[#F5F5F4] p-3">
-                <p className="font-mono text-[11px] uppercase tracking-wider font-bold text-black mb-2">
-                  AI Confidence
-                </p>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-                  {Object.entries(extractedData.confidence).map(([key, val]) => (
-                    <div key={key} className="flex items-center justify-between">
-                      <span className="text-[11px] font-mono text-black/60">{key.replace(/_/g, " ")}</span>
-                      <span
-                        className={`text-[11px] font-mono font-bold ${
-                          val >= 0.9 ? "text-green-700" : val >= 0.7 ? "text-yellow-700" : "text-red-600"
-                        }`}
-                      >
-                        {(val * 100).toFixed(0)}%
-                      </span>
-                    </div>
-                  ))}
+            {showNewVendor && (
+              <div className="space-y-2 border-2 border-black bg-[#B3A0FF]/10 p-3">
+                <Input
+                  label="Vendor Name"
+                  value={newVendor.name}
+                  onChange={(e) => setNewVendor({ ...newVendor, name: e.target.value })}
+                />
+                <Input
+                  label="Payment Address (aleo1...)"
+                  value={newVendor.payment_address}
+                  onChange={(e) => setNewVendor({ ...newVendor, payment_address: e.target.value })}
+                />
+                <Input
+                  label="Category (optional)"
+                  value={newVendor.category}
+                  onChange={(e) => setNewVendor({ ...newVendor, category: e.target.value })}
+                />
+                <Input
+                  label="Contact Email (optional)"
+                  value={newVendor.contact_email}
+                  onChange={(e) => setNewVendor({ ...newVendor, contact_email: e.target.value })}
+                />
+                <div className="flex gap-2">
+                  <button
+                    onClick={createVendorInline}
+                    disabled={!newVendor.name || !newVendor.payment_address || creatingVendor}
+                    className="flex-1 bg-[#A259FF] text-white border-2 border-black font-mono text-xs font-bold uppercase tracking-wider py-2 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] disabled:opacity-40"
+                  >
+                    {creatingVendor ? "Creating..." : "Create Vendor"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowNewVendor(false);
+                      resetNewVendor();
+                    }}
+                    className="border-2 border-black font-mono text-xs font-bold uppercase tracking-wider py-2 px-4"
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
             )}
-
-            <div className="flex gap-2 pt-2">
-              <button
-                className="flex-1 bg-white text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all"
-                onClick={() => {
-                  setExtractedData(null);
-                  setExtractError(null);
-                }}
-              >
-                {entryMode === "manual" ? "Back" : "Re-upload"}
-              </button>
-              <button
-                className="flex-1 bg-[#C6F15C] text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50"
-                onClick={handleSave}
-                disabled={saving}
-              >
-                {saving ? "Saving..." : "Save Invoice"}
-              </button>
-            </div>
           </div>
-        )}
+
+          {/* ── Step 2: Entry mode — only show AFTER a vendor is selected ── */}
+          {selectedVendor && !extractedData && (
+            <>
+              {/* Mode toggle tabs */}
+              <div className="flex gap-0">
+                <button
+                  onClick={() => setEntryMode("upload")}
+                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
+                    entryMode === "upload"
+                      ? "bg-[#C6F15C] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                      : "bg-white text-black/50 hover:bg-[#E5E5E5]"
+                  }`}
+                >
+                  <Upload className="w-3 h-3" />
+                  AI Upload
+                </button>
+                <button
+                  onClick={() => setEntryMode("manual")}
+                  className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 border-2 border-black -ml-[2px] font-mono text-[11px] font-bold uppercase tracking-wider transition-all ${
+                    entryMode === "manual"
+                      ? "bg-[#A259FF] text-white shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+                      : "bg-white text-black/50 hover:bg-[#E5E5E5]"
+                  }`}
+                >
+                  <PenLine className="w-3 h-3" />
+                  Manual Entry
+                </button>
+              </div>
+
+              {entryMode === "upload" ? (
+                <>
+                  <p className="text-[13px] font-mono text-black/70">
+                    Upload an invoice PDF or image. AI will extract amounts and line items automatically.
+                  </p>
+                  <FileUploadZone onFileSelected={handleFileSelected} loading={extracting} />
+                  {extractError && (
+                    <p className="text-xs font-mono text-red-600 font-bold">{extractError}</p>
+                  )}
+                </>
+              ) : (
+                /* Manual entry form — no vendor_name field */
+                <div className="space-y-3">
+                  <p className="text-[13px] font-mono text-black/70">
+                    Enter invoice details manually. All fields with * are required.
+                  </p>
+                  <Input
+                    label="Invoice Number *"
+                    placeholder="INV-001"
+                    value={manualForm.invoice_number}
+                    onChange={(e) => setManualForm((f) => ({ ...f, invoice_number: e.target.value }))}
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Amount *"
+                      type="number"
+                      placeholder="0.00"
+                      value={manualForm.amount}
+                      onChange={(e) => setManualForm((f) => ({ ...f, amount: e.target.value }))}
+                    />
+                    <Input
+                      label="Tax"
+                      type="number"
+                      placeholder="0.00"
+                      value={manualForm.tax_amount}
+                      onChange={(e) => setManualForm((f) => ({ ...f, tax_amount: e.target.value }))}
+                    />
+                  </div>
+
+                  {/* Currency select */}
+                  <div className="space-y-1.5">
+                    <label className="block font-mono text-xs font-bold uppercase tracking-wider text-text-3">
+                      Currency
+                    </label>
+                    <select
+                      value={manualForm.currency}
+                      onChange={(e) => setManualForm((f) => ({ ...f, currency: e.target.value }))}
+                      className="w-full border-2 border-black bg-white font-mono text-sm p-3 text-text-1 focus:outline-none focus:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all appearance-none cursor-pointer"
+                    >
+                      <option value="ALEO">ALEO</option>
+                      <option value="USDCx">USDCx</option>
+                      <option value="USAD">USAD</option>
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      label="Issue Date"
+                      type="date"
+                      value={manualForm.issue_date}
+                      onChange={(e) => setManualForm((f) => ({ ...f, issue_date: e.target.value }))}
+                    />
+                    <Input
+                      label="Due Date"
+                      type="date"
+                      value={manualForm.due_date}
+                      onChange={(e) => setManualForm((f) => ({ ...f, due_date: e.target.value }))}
+                    />
+                  </div>
+                  <Input
+                    label="PO Number"
+                    placeholder="PO-12345 (optional)"
+                    value={manualForm.po_number}
+                    onChange={(e) => setManualForm((f) => ({ ...f, po_number: e.target.value }))}
+                  />
+                  <Input
+                    label="Notes"
+                    placeholder="Additional notes (optional)"
+                    value={manualForm.notes}
+                    onChange={(e) => setManualForm((f) => ({ ...f, notes: e.target.value }))}
+                  />
+
+                  <button
+                    onClick={handleManualSave}
+                    disabled={!manualForm.invoice_number || !manualForm.amount}
+                    className="w-full bg-[#A259FF] text-white border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2.5 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Review & Save
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── Step 3: Review/edit extracted data ── */}
+          {extractedData && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 className="w-4 h-4 text-green-700" />
+                <p className="text-[13px] font-mono font-bold text-green-700 uppercase">
+                  {entryMode === "manual" ? "Review invoice details" : "Data extracted successfully"}
+                </p>
+              </div>
+
+              {/* Vendor-mismatch warning */}
+              {vendorNameMismatch && (
+                <div className="border-2 border-[#FF90E8] bg-[#FF90E8]/20 p-3">
+                  <p className="font-mono text-xs font-bold uppercase tracking-wider text-black">
+                    ⚠ AI extracted &ldquo;{extractedData.vendor_name}&rdquo; but you selected &ldquo;{selectedVendor?.name}&rdquo;
+                  </p>
+                </div>
+              )}
+
+              <Input
+                label="Invoice Number"
+                value={extractedData.invoice_number ?? ""}
+                onChange={(e) =>
+                  setExtractedData({ ...extractedData, invoice_number: e.target.value })
+                }
+              />
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Amount"
+                  type="number"
+                  value={extractedData.amount?.toString() ?? ""}
+                  onChange={(e) =>
+                    setExtractedData({ ...extractedData, amount: parseFloat(e.target.value) || 0 })
+                  }
+                />
+                <Input
+                  label="Tax"
+                  type="number"
+                  value={extractedData.tax_amount?.toString() ?? ""}
+                  onChange={(e) =>
+                    setExtractedData({ ...extractedData, tax_amount: parseFloat(e.target.value) || 0 })
+                  }
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  label="Issue Date"
+                  type="date"
+                  value={extractedData.issue_date ?? ""}
+                  onChange={(e) =>
+                    setExtractedData({ ...extractedData, issue_date: e.target.value })
+                  }
+                />
+                <Input
+                  label="Due Date"
+                  type="date"
+                  value={extractedData.due_date ?? ""}
+                  onChange={(e) =>
+                    setExtractedData({ ...extractedData, due_date: e.target.value })
+                  }
+                />
+              </div>
+              <Input
+                label="PO Number"
+                value={extractedData.po_number ?? ""}
+                onChange={(e) =>
+                  setExtractedData({ ...extractedData, po_number: e.target.value })
+                }
+              />
+              <Input
+                label="Currency"
+                value={extractedData.currency ?? ""}
+                onChange={(e) =>
+                  setExtractedData({ ...extractedData, currency: e.target.value })
+                }
+              />
+
+              {/* Confidence scores */}
+              {extractedData.confidence && Object.keys(extractedData.confidence).length > 0 && (
+                <div className="border-2 border-black bg-[#F5F5F4] p-3">
+                  <p className="font-mono text-[11px] uppercase tracking-wider font-bold text-black mb-2">
+                    AI Confidence
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    {Object.entries(extractedData.confidence).map(([key, val]) => (
+                      <div key={key} className="flex items-center justify-between">
+                        <span className="text-[11px] font-mono text-black/60">{key.replace(/_/g, " ")}</span>
+                        <span
+                          className={`text-[11px] font-mono font-bold ${
+                            val >= 0.9 ? "text-green-700" : val >= 0.7 ? "text-yellow-700" : "text-red-600"
+                          }`}
+                        >
+                          {(val * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  className="flex-1 bg-white text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all"
+                  onClick={() => {
+                    setExtractedData(null);
+                    setExtractError(null);
+                  }}
+                >
+                  {entryMode === "manual" ? "Back" : "Re-upload"}
+                </button>
+                <button
+                  className="flex-1 bg-[#C6F15C] text-black border-2 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] font-mono uppercase font-bold tracking-wider px-4 py-2 text-sm hover:translate-x-[2px] hover:translate-y-[2px] hover:shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-all disabled:opacity-50"
+                  onClick={handleSave}
+                  disabled={saving}
+                >
+                  {saving ? "Saving..." : "Save Invoice"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </SlidePanel>
     </motion.div>
   );
