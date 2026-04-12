@@ -5,7 +5,7 @@ import { Eye, EyeOff, Shield, Lock, ExternalLink, FileCheck, Fingerprint, Layers
 import { PageHeader } from "@/components/ui/page-header";
 import { useData } from "@/lib/hooks/use-data";
 import { useWalletStore } from "@/stores/wallet-store";
-import { truncateAddress } from "@/lib/format";
+import { truncateAddress, explorerTxUrl } from "@/lib/format";
 import { formatDate, formatMicro } from "@/lib/utils";
 
 /**
@@ -46,14 +46,11 @@ type AuditProof = {
   date_range_end?: string;
 };
 
-const explorerTx = (h: string) =>
-  `https://explorer.provable.com/v1/testnet/transaction/${h}`;
-
 function TxLink({ hash }: { hash?: string | null }) {
   if (!hash) return <span className="text-black/30 italic text-[10px]">not yet committed</span>;
   return (
     <a
-      href={explorerTx(hash)}
+      href={explorerTxUrl(hash)}
       target="_blank"
       rel="noreferrer"
       className="inline-flex items-center gap-1 font-mono text-[10px] text-black underline hover:text-[#A259FF] truncate"

@@ -5,6 +5,18 @@ export const formatMicro = _formatMicro;
 export const formatDate = _formatDate;
 
 /**
+ * Build a Provable explorer URL for a transaction, scoped to whichever
+ * Aleo network the app is currently configured for. Reads
+ * NEXT_PUBLIC_ALEO_NETWORK so a mainnet deploy doesn't silently link to
+ * testnet pages. Default is testnet because that's where the deployed
+ * contracts live today.
+ */
+export function explorerTxUrl(txHash: string): string {
+  const network = process.env.NEXT_PUBLIC_ALEO_NETWORK || "testnet";
+  return `https://explorer.provable.com/v1/${network}/transaction/${txHash}`;
+}
+
+/**
  * Format a large number with abbreviation
  * 1234567 → "1.2M"
  */

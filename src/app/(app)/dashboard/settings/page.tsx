@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { PageHeader } from "@/components/ui/page-header";
 import { Settings, Wallet, Users, ShieldCheck, Save, Plus, Trash2, Link2 } from "lucide-react";
 import { useWalletStore } from "@/stores/wallet-store";
-import { truncateAddress } from "@/lib/format";
+import { truncateAddress, explorerTxUrl } from "@/lib/format";
 import { formatMicro } from "@/lib/format";
 import { setThreshold, setSpendingLimit } from "@/lib/aleo/programs/workflow";
 import { setVendorAllowlist } from "@/lib/aleo/programs/invoice";
@@ -500,7 +500,7 @@ export default function SettingsPage() {
                       </span>
                       {r.txHash ? (
                         <a
-                          href={`https://explorer.provable.com/v1/testnet/transaction/${r.txHash}`}
+                          href={explorerTxUrl(r.txHash)}
                           target="_blank" rel="noreferrer"
                           className="flex items-center gap-1 text-[#A259FF] underline"
                         >
@@ -607,7 +607,7 @@ export default function SettingsPage() {
                       <span className="text-black tabular-nums shrink-0">{formatMicro(l.limitMicro)} / month</span>
                       {l.txHash ? (
                         <a
-                          href={`https://explorer.provable.com/v1/testnet/transaction/${l.txHash}`}
+                          href={explorerTxUrl(l.txHash)}
                           target="_blank" rel="noreferrer"
                           className="flex items-center gap-1 text-[#A259FF] underline"
                         >
@@ -685,7 +685,7 @@ export default function SettingsPage() {
                   <span className="font-bold text-black/60 uppercase tracking-wider text-[9px]">Current root</span>
                   {allowlistTx ? (
                     <a
-                      href={`https://explorer.provable.com/v1/testnet/transaction/${allowlistTx}`}
+                      href={explorerTxUrl(allowlistTx)}
                       target="_blank" rel="noreferrer"
                       className="flex items-center gap-1 text-[#A259FF] underline text-[10px]"
                     >

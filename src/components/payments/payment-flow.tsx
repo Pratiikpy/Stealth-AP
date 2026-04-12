@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { PrivacyIndicator } from "@/components/ui/privacy-indicator";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { formatMicro } from "@/lib/format";
+import { formatMicro, explorerTxUrl } from "@/lib/format";
 import { useWalletStore } from "@/stores/wallet-store";
 import { useAleoTransaction } from "@/lib/hooks/use-aleo-transaction";
 import { getCreditsRecords, findRecordForAmount, invalidateRecordCache, getTotalBalance, markTentativelySpent, unmarkTentativelySpent } from "@/lib/aleo/records";
@@ -537,8 +537,9 @@ export function PaymentFlow({
             const invTx = (inv as Invoice & { txHash?: string }).txHash;
             const approvals = (inv as Invoice & { approvals?: Array<{ aleo_tx_id?: string; status?: string }> }).approvals ?? [];
             const approvalTx = approvals.find((a) => a.status === "approved")?.aleo_tx_id;
-            const explorer = (txHash: string) =>
-              `https://explorer.provable.com/v1/testnet/transaction/${txHash}`;
+            // Use the network-aware helper so a mainnet deploy links to
+            // the mainnet explorer, not silently to testnet.
+            const explorer = explorerTxUrl;
             // Deterministic per-invoice pseudonym code. Same formula the
             // inv_v2::generate_pseudonym contract uses (real_address +
             // invoice_id + rotation_nonce, hashed). Displayed to the user

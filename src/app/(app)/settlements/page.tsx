@@ -15,6 +15,7 @@ import { SlidePanel } from "@/components/ui/slide-panel";
 import { PaymentFlow } from "@/components/payments/payment-flow";
 import { motion } from "framer-motion";
 import { CreditCard, Clock, ShieldCheck, Plus, Layers, CheckSquare, Square } from "lucide-react";
+import { explorerTxUrl } from "@/lib/format";
 import { SkeletonTable, SkeletonCards } from "@/components/ui/skeleton";
 import type { Payment, Invoice } from "@/lib/types";
 import type { InvoiceRow } from "@/types";
@@ -503,7 +504,7 @@ export default function SettlementsPage() {
                     <div key={idx} className="flex items-center gap-2">
                       <span className="text-white/50 w-32 shrink-0">{t.label}:</span>
                       <a
-                        href={`https://explorer.provable.com/v1/testnet/transaction/${t.hash}`}
+                        href={explorerTxUrl(t.hash)}
                         target="_blank"
                         rel="noreferrer"
                         className="text-[#C6F15C] underline truncate"
