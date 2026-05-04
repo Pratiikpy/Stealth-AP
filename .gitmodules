@@ -1,0 +1,6 @@
+[submodule "soso/packages/pod-contracts/lib/openzeppelin-contracts"]
+	path = soso/packages/pod-contracts/lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts
+[submodule "soso/packages/pod-contracts/lib/forge-std"]
+	path = soso/packages/pod-contracts/lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
