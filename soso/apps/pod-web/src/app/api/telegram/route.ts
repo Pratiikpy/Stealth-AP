@@ -305,9 +305,11 @@ function getHandler() {
     await ctx.reply(help(state.language));
   });
 
-  cachedHandler = webhookCallback(bot, 'std/http', {
-    secretToken: process.env['TELEGRAM_WEBHOOK_SECRET'] ?? '',
-  }) as (req: Request) => Promise<Response>;
+  // Only enforce secretToken if Telegram was registered with one. An empty
+  // string (env var unset) makes grammY reject every Telegram request with 401.
+  const secret = process.env['TELEGRAM_WEBHOOK_SECRET'];
+  const opts = secret ? { secretToken: secret } : {};
+  cachedHandler = webhookCallback(bot, 'std/http', opts) as (req: Request) => Promise<Response>;
   return cachedHandler;
 }
 
