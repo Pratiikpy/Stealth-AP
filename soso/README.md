@@ -145,6 +145,7 @@ Reproducibility:
 - **SoSoValue free-tier rate limits** can cause individual sources to skip during the 10-asset fan-out. The drawer surfaces this honestly via the `Sources (N/5)` count.
 - **30-day score trace on `/asset/[symbol]` is indicative** until the daily cron has populated 30 days of history.
 - **Bot uses a custodial testnet keystore** for the Wave-1 demo. A non-custodial wallet flow is Wave-2.
+- **`PodScoreReceipt` contract is not yet deployed to ValueChain testnet.** The compiled contract + deploy script + funded deployer wallet are ready (`packages/pod-contracts/script/Deploy.s.sol`, address `0x85987DE711B660d2452AA80D4cBfb2b18981CaaB`), but the public SoDEX testnet faucet only drips USDC — no native gas token. Unblock = ask the SoDEX team to drip native gas to that address; deploy is one `forge script ... --broadcast` away after that.
 - **POD scores are research signals, not investment advice.** No backtest replaces real risk management.
 
 ## What's next (Wave 2 candidates)
