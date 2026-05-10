@@ -1,5 +1,10 @@
 import { SoSoValue, type EtfSymbol } from '@pod/sosovalue-sdk';
-import { SignalEngine, type SignalDirection } from '@pod/signal-engine';
+import {
+  SignalEngine,
+  type SignalContribution,
+  type SignalDirection,
+  type SignalRequest,
+} from '@pod/signal-engine';
 
 export interface BubbleData {
   asset: EtfSymbol;
@@ -13,6 +18,8 @@ export interface BubbleData {
   reasoning: string;
   /** Top citation (e.g. "BTC ETF flow mild outflow: -$137.8M on 2026-04-29"). */
   citation: string;
+  /** Per-source breakdown — drives the drawer "Why this score" panel. */
+  contributions: SignalContribution[];
   /** Approximate ETF AUM rank — drives bubble size. */
   rank: number;
   uncertain: boolean;
@@ -32,71 +39,76 @@ const TRACKED: Array<{ asset: EtfSymbol; name: string; rank: number }> = [
   { asset: 'HBAR', name: 'Hedera', rank: 10 },
 ];
 
+const ALL_SOURCES = [
+  'ETF_FLOW',
+  'MACRO_EVENT',
+  'NEWS_SENTIMENT',
+  'BTC_TREASURY',
+  'VC_FUNDING',
+] as const;
+
 function citationFromReasoning(text: string): string {
-  // Extract the "X ETF flow ..." sentence if present.
   const m = text.match(/[A-Z]{2,5} ETF flow[^.]+\./);
   if (m) return m[0];
   return text.split('.')[0] + '.';
 }
 
+function fallbackBubble(t: { asset: EtfSymbol; name: string; rank: number }, reason: string): BubbleData {
+  return {
+    asset: t.asset,
+    name: t.name,
+    score: 50,
+    direction: 'HOLD' as SignalDirection,
+    z: 0,
+    reasoning: reason,
+    citation: 'No live data',
+    contributions: [],
+    rank: t.rank,
+    uncertain: true,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
 export async function fetchAllBubbleData(): Promise<BubbleData[]> {
   const apiKey = process.env['SOSOVALUE_API_KEY'];
   if (!apiKey) {
-    return TRACKED.map((t) => ({
-      asset: t.asset,
-      name: t.name,
-      score: 50,
-      direction: 'HOLD' as SignalDirection,
-      z: 0,
-      reasoning: 'Set SOSOVALUE_API_KEY to see live signals.',
-      citation: 'No live data',
-      rank: t.rank,
-      uncertain: true,
-      generatedAt: new Date().toISOString(),
-    }));
+    return TRACKED.map((t) => fallbackBubble(t, 'Set SOSOVALUE_API_KEY to see live signals.'));
   }
 
   const sso = new SoSoValue({ apiKey });
   const engine = new SignalEngine(sso);
 
-  // Serialize: SoSoValue rate-limits a 10-way parallel fan-out and every
-  // contribution comes back null, collapsing every bubble to score=50.
-  const out: BubbleData[] = [];
-  for (const t of TRACKED) {
-    try {
-      const signal = await engine.generate({
-        asset: t.asset,
-        riskProfile: 'BALANCED',
-        sources: ['ETF_FLOW'],
-      });
-      out.push({
-        asset: t.asset,
-        name: t.name,
-        score: signal.podScore,
-        direction: signal.direction,
-        z: signal.compositeZ,
-        reasoning: signal.reasoning,
-        citation: citationFromReasoning(signal.reasoning),
-        rank: t.rank,
-        uncertain: signal.uncertain,
-        generatedAt: signal.generated_at,
-      });
-    } catch (err) {
-      console.error('[bubble-data]', t.asset, err);
-      out.push({
-        asset: t.asset,
-        name: t.name,
-        score: 50,
-        direction: 'HOLD' as SignalDirection,
-        z: 0,
-        reasoning: 'Signal temporarily unavailable.',
-        citation: 'No live data',
-        rank: t.rank,
-        uncertain: true,
-        generatedAt: new Date().toISOString(),
-      });
-    }
-    await new Promise((r) => setTimeout(r, 120));
+  const requests: SignalRequest[] = TRACKED.map((t) => ({
+    asset: t.asset,
+    riskProfile: 'BALANCED',
+    sources: ALL_SOURCES,
+  }));
+
+  let signals;
+  try {
+    signals = await engine.generateBatch(requests, { perAssetGapMs: 120 });
+  } catch (err) {
+    console.error('[bubble-data] generateBatch failed:', err);
+    return TRACKED.map((t) => fallbackBubble(t, 'Signal temporarily unavailable.'));
   }
-  return out;
+
+  return TRACKED.map((t, i) => {
+    const signal = signals[i];
+    if (!signal) {
+      return fallbackBubble(t, 'Signal temporarily unavailable.');
+    }
+    return {
+      asset: t.asset,
+      name: t.name,
+      score: signal.podScore,
+      direction: signal.direction,
+      z: signal.compositeZ,
+      reasoning: signal.reasoning,
+      citation: citationFromReasoning(signal.reasoning),
+      contributions: signal.contributions,
+      rank: t.rank,
+      uncertain: signal.uncertain,
+      generatedAt: signal.generated_at,
+    };
+  });
 }
