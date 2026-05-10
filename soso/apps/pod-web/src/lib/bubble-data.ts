@@ -1,3 +1,4 @@
+import { unstable_cache } from 'next/cache';
 import { SoSoValue, type EtfSymbol } from '@pod/sosovalue-sdk';
 import {
   SignalEngine,
@@ -69,7 +70,7 @@ function fallbackBubble(t: { asset: EtfSymbol; name: string; rank: number }, rea
   };
 }
 
-export async function fetchAllBubbleData(): Promise<BubbleData[]> {
+async function fetchAllBubbleDataInner(): Promise<BubbleData[]> {
   const apiKey = process.env['SOSOVALUE_API_KEY'];
   if (!apiKey) {
     return TRACKED.map((t) => fallbackBubble(t, 'Set SOSOVALUE_API_KEY to see live signals.'));
@@ -112,3 +113,12 @@ export async function fetchAllBubbleData(): Promise<BubbleData[]> {
     };
   });
 }
+
+// 10-minute TTL on the SoSoValue fan-out so we don't slam free-tier limits.
+// Stale-while-revalidate behaviour: first request after expiry returns last
+// cached value while a fresh fetch fills the cache for the next request.
+export const fetchAllBubbleData = unstable_cache(
+  fetchAllBubbleDataInner,
+  ['bubble-data-v2'],
+  { revalidate: 600, tags: ['bubbles'] },
+);
