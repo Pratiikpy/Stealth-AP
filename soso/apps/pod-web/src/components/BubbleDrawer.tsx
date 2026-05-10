@@ -1,5 +1,7 @@
 'use client';
 
+import { useEffect } from 'react';
+import Link from 'next/link';
 import type { BubbleData } from '@/lib/bubble-data';
 import { POD, scoreColor, scoreLabel } from '@/design/tokens';
 import { ScoreGauge, Citation, Eyebrow, AssetGlyph } from '@/design/atoms';
@@ -21,6 +23,16 @@ export function BubbleDrawer({
   data: BubbleData | null;
   onClose: () => void;
 }) {
+  // Esc closes drawer; only attaches when open.
+  useEffect(() => {
+    if (!data) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [data, onClose]);
+
   if (!data) return null;
   const c = scoreColor(data.score);
 
@@ -37,25 +49,12 @@ export function BubbleDrawer({
           zIndex: 40,
         }}
       />
-      {/* Drawer */}
+      {/* Drawer — desktop side-sheet, mobile bottom-sheet (CSS handled in pod-bubbles.css) */}
       <aside
-        style={{
-          position: 'fixed',
-          top: 0,
-          right: 0,
-          bottom: 0,
-          width: 'min(420px, 100vw)',
-          background: POD.ink850,
-          borderLeft: '1px solid rgba(255,255,255,0.06)',
-          zIndex: 50,
-          padding: '24px 26px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 20,
-          color: POD.ink100,
-          fontFamily: 'Geist, system-ui',
-          overflow: 'auto',
-        }}
+        className="pod-drawer"
+        role="dialog"
+        aria-label={`${data.asset} POD score detail`}
+        aria-modal="true"
       >
         {/* header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -247,29 +246,50 @@ export function BubbleDrawer({
           </div>
         )}
 
-        {/* CTA */}
-        <a
-          href="https://t.me/podttest_bot"
+        {/* Footer actions */}
+        <div
           style={{
             marginTop: 'auto',
             display: 'flex',
-            justifyContent: 'center',
-            alignItems: 'center',
-            gap: 8,
-            background: POD.lime,
-            color: POD.ink900,
-            padding: '14px 0',
-            borderRadius: 14,
-            fontWeight: 600,
-            fontSize: 14,
-            textDecoration: 'none',
+            flexDirection: 'column',
+            gap: 10,
           }}
         >
-          <svg width="14" height="14" viewBox="0 0 12 12">
-            <path d="M2 2l8 4-8 4 2-4z" fill="currentColor" />
-          </svg>
-          Trade {data.asset} on Telegram
-        </a>
+          <Link
+            href={`/asset/${data.asset}`}
+            style={{
+              fontSize: 12,
+              color: POD.ink300,
+              textDecoration: 'none',
+              alignSelf: 'center',
+              borderBottom: `1px solid ${POD.ink600}`,
+              paddingBottom: 1,
+            }}
+          >
+            View full analysis →
+          </Link>
+          <a
+            href={`https://t.me/podttest_bot?start=score_${data.asset}`}
+            style={{
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              gap: 8,
+              background: POD.lime,
+              color: POD.ink900,
+              padding: '14px 0',
+              borderRadius: 14,
+              fontWeight: 600,
+              fontSize: 14,
+              textDecoration: 'none',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 12 12">
+              <path d="M2 2l8 4-8 4 2-4z" fill="currentColor" />
+            </svg>
+            Trade {data.asset} on Telegram
+          </a>
+        </div>
       </aside>
     </>
   );

@@ -24,6 +24,16 @@ interface BubbleNode extends BubbleData {
 }
 
 const SIZE_BY_RANK = [120, 96, 84, 76, 70, 64, 60, 56, 52, 48];
+const SIZE_BY_RANK_NARROW = [80, 66, 60, 56, 52, 48, 44, 42, 40, 38];
+
+function pickSizes(viewportWidth: number): number[] {
+  return viewportWidth < 640 ? SIZE_BY_RANK_NARROW : SIZE_BY_RANK;
+}
+
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
 
 export function BubbleCanvas({
   bubbles,
@@ -44,8 +54,9 @@ export function BubbleCanvas({
     if (!canvas) return;
     const w = canvas.clientWidth;
     const h = canvas.clientHeight;
+    const sizes = pickSizes(w);
     nodesRef.current = bubbles.map((b, i) => {
-      const r = SIZE_BY_RANK[Math.min(b.rank - 1, SIZE_BY_RANK.length - 1)] ?? 50;
+      const r = sizes[Math.min(b.rank - 1, sizes.length - 1)] ?? 50;
       const angle = (i / bubbles.length) * Math.PI * 2;
       return {
         ...b,
@@ -120,7 +131,7 @@ export function BubbleCanvas({
           n.y = h - margin;
           n.vy = -Math.abs(n.vy) * 0.6;
         }
-        n.phase += 0.03;
+        n.phase += prefersReducedMotion() ? 0 : 0.03;
       }
       // Collision pass
       for (let i = 0; i < nodes.length; i++) {
