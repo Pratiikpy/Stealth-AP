@@ -243,19 +243,8 @@ export function BubbleCanvas({
         const dx = mx - n.x;
         const dy = my - n.y;
         if (dx * dx + dy * dy <= n.r * n.r) {
-          onSelect({
-            asset: n.asset,
-            name: n.name,
-            score: n.score,
-            direction: n.direction,
-            z: n.z,
-            reasoning: n.reasoning,
-            citation: n.citation,
-            contributions: n.contributions,
-            rank: n.rank,
-            uncertain: n.uncertain,
-            generatedAt: n.generatedAt,
-          });
+          const { x: _x, y: _y, vx: _vx, vy: _vy, r: _r, phase: _phase, ...bubble } = n;
+          onSelect(bubble);
           return;
         }
       }

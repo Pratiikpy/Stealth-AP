@@ -1,14 +1,33 @@
 import { Bot, InlineKeyboard, type Context } from 'grammy';
 import { webhookCallback } from 'grammy';
-import { SoSoValue, type EtfSymbol } from '@pod/sosovalue-sdk';
+import { type EtfSymbol } from '@pod/sosovalue-sdk';
 import {
-  SignalEngine,
   type PodSignal,
   type RiskProfile,
 } from '@pod/signal-engine';
 import OpenAI from 'openai';
 import { tradeOnSignal } from '@/lib/trading';
+import { getBubble, type BubbleData } from '@/lib/bubble-data';
 import type { Hex } from 'viem';
+
+/**
+ * Adapt a cached BubbleData into the PodSignal shape the card + trade code
+ * expects. Reading from the shared cache means /signal, /score, /trade and the
+ * web /bubbles page all show the same number — no per-call rate-limit drift.
+ */
+function bubbleToSignal(b: BubbleData): PodSignal {
+  return {
+    asset: b.asset,
+    generated_at: b.generatedAt,
+    direction: b.direction,
+    podScore: b.score,
+    compositeZ: b.z,
+    contributions: b.contributions,
+    targetBasket: b.targetBasket,
+    reasoning: b.reasoning,
+    uncertain: b.uncertain,
+  };
+}
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -175,15 +194,12 @@ function getHandler() {
     return async () => new Response('TELEGRAM_BOT_TOKEN not configured', { status: 500 });
   }
 
-  const sso = new SoSoValue({ apiKey: process.env['SOSOVALUE_API_KEY'] ?? '' });
-  const engine = new SignalEngine(sso);
   const bot = new Bot(token);
 
   // /start
   bot.command('start', async (ctx) => {
     const state = getOrCreateState(ctx);
     await ctx.reply(welcome(state.language), {
-      parse_mode: 'Markdown',
       reply_markup: new InlineKeyboard()
         .text('🛡️ Chill', 'risk:CHILL')
         .text('⚖️ Balanced', 'risk:BALANCED')
@@ -195,80 +211,104 @@ function getHandler() {
   bot.callbackQuery(/^risk:(CHILL|BALANCED|SEND_IT)$/, async (ctx) => {
     const state = getOrCreateState(ctx);
     state.riskProfile = ctx.match[1] as RiskProfile;
-    await ctx.answerCallbackQuery();
+    await ctx.answerCallbackQuery({ text: `Vibe: ${state.riskProfile}` });
     await ctx.reply(`✅ Vibe locked: ${state.riskProfile}.\n\nNow try /signal for a live BTC analysis.`);
   });
 
   // /signal
   bot.command('signal', async (ctx) => {
     const state = getOrCreateState(ctx);
-    await ctx.reply('🤖 Crunching the numbers…');
-    try {
-      const signal = await engine.generate({
-        asset: 'BTC',
-        riskProfile: state.riskProfile ?? 'BALANCED',
-      });
-      await ctx.reply(signalCard(state.language, signal), { parse_mode: 'Markdown' });
-      const narration = await narrate(signal, state.personality, state.language);
-      if (narration) {
-        await ctx.reply(`🧠 ${narration}`);
-      }
-    } catch (err) {
-      await ctx.reply('⚠️ Signal data not available right now (rate limit). Try again in 60s.');
-      console.error('[bot] /signal failed', err);
+    await ctx.reply('🤖 Reading the flow…');
+    const b = await getBubble('BTC');
+    if (!b || b.citation === 'No live data') {
+      await ctx.reply('⚠️ Live data unavailable right now (rate limit). Try again in a minute.');
+      return;
     }
+    const signal = bubbleToSignal(b);
+    // signalCard text is fully controlled (no user input, balanced *bold*) — Markdown is safe here.
+    await ctx.reply(signalCard(state.language, signal), { parse_mode: 'Markdown' });
+    const narration = await narrate(signal, state.personality, state.language);
+    if (narration) await ctx.reply(`🧠 ${narration}`);
   });
 
   // /score [SYMBOL]
   bot.command('score', async (ctx) => {
-    const state = getOrCreateState(ctx);
     const arg = ctx.match?.toString().trim().toUpperCase();
-    const asset = SUPPORTED_ASSETS.includes(arg as EtfSymbol)
+    const asset: EtfSymbol = SUPPORTED_ASSETS.includes(arg as EtfSymbol)
       ? (arg as EtfSymbol)
       : 'BTC';
-    try {
-      const signal = await engine.generate({
-        asset,
-        riskProfile: state.riskProfile ?? 'BALANCED',
-        sources: ['ETF_FLOW'],
-      });
-      await ctx.reply(`*${asset}* POD Score: *${signal.podScore}/100*\n${signal.reasoning}`, {
-        parse_mode: 'Markdown',
-      });
-    } catch {
-      await ctx.reply('⚠️ Score temporarily unavailable.');
+    const b = await getBubble(asset);
+    if (!b || b.citation === 'No live data') {
+      await ctx.reply('⚠️ Live data unavailable right now. Try again in a minute.');
+      return;
     }
+    await ctx.reply(
+      `${asset} POD Score: ${b.score}/100  (${b.direction}${b.uncertain ? ', low confidence' : ''})\n\n${b.reasoning}`,
+    );
   });
 
-  // /trade — real testnet execution
+  // /trade — confirm card → on Confirm, place a real SoDEX testnet order
   bot.command('trade', async (ctx) => {
     const state = getOrCreateState(ctx);
     const tradePk = process.env['SODEX_PRIVATE_KEY'] as Hex | undefined;
     if (!tradePk) {
       await ctx.reply(
-        '⚠️ Trade execution not configured on this deployment.\n' +
-          'In production each user has their own Privy wallet — Wave 2.',
+        '⚠️ Trade execution not configured on this deployment.\nProduction gives each user their own embedded wallet — Wave 2.',
       );
       return;
     }
+    const b = await getBubble('BTC');
+    if (!b || b.citation === 'No live data') {
+      await ctx.reply('⚠️ Live data unavailable — cannot build a trade right now.');
+      return;
+    }
+    const funds = 6; // fixed $6 testnet ticket
+    if (b.direction !== 'BUY' && b.direction !== 'STRONG_BUY') {
+      await ctx.reply(
+        `📊 BTC POD Score ${b.score}/100 — direction ${b.direction}.\n\nNo trade: Wave 1 only acts on BUY / STRONG_BUY. Nothing to confirm.`,
+      );
+      return;
+    }
+    await ctx.reply(
+      `🧾 Trade confirm\n\nBuy $${funds} of BTC at market on SoDEX testnet.\nBasis: POD Score ${b.score}/100 (${b.direction}, z=${b.z.toFixed(2)}).\n\nThis is a real testnet order signed with the demo wallet. No mainnet value.`,
+      {
+        reply_markup: new InlineKeyboard()
+          .text('✅ Confirm', `trade:go:${funds}`)
+          .text('✕ Cancel', 'trade:cancel'),
+      },
+    );
+  });
 
-    await ctx.reply('🤖 Generating signal + executing on SoDEX testnet…');
+  // /trade — cancel
+  bot.callbackQuery('trade:cancel', async (ctx) => {
+    await ctx.answerCallbackQuery({ text: 'Cancelled' });
+    await ctx.editMessageText('✕ Trade cancelled. Nothing was sent.');
+  });
+
+  // /trade — confirmed: execute
+  bot.callbackQuery(/^trade:go:(\d+)$/, async (ctx) => {
+    const funds = Number(ctx.match[1]);
+    await ctx.answerCallbackQuery({ text: 'Submitting…' });
+    await ctx.editMessageText('🤖 Submitting order to SoDEX testnet…');
+    const tradePk = process.env['SODEX_PRIVATE_KEY'] as Hex;
+    const b = await getBubble('BTC');
+    if (!b) {
+      await ctx.reply('⚠️ Lost the signal — try /trade again.');
+      return;
+    }
     try {
-      const signal = await engine.generate({
-        asset: 'BTC',
-        riskProfile: state.riskProfile ?? 'BALANCED',
-      });
-      const trade = await tradeOnSignal({ privateKey: tradePk, signal, fundsUsd: 6 });
-
-      let body = `📊 Signal: ${signal.direction} (${signal.podScore}/100)\n\n`;
+      const trade = await tradeOnSignal({ privateKey: tradePk, signal: bubbleToSignal(b), fundsUsd: funds });
+      // Plain text only — SoDEX responses contain chars that break Telegram Markdown.
+      let body = `📊 BTC ${b.direction} (POD Score ${b.score}/100)\n\n`;
       if (!trade.attempted) {
         body += `⏸ ${trade.reason ?? trade.error ?? 'no trade'}`;
       } else if (trade.error) {
-        body += `❌ ${trade.error}\n\n_This is the testnet API-key gate — expected until kouhi2550 in Discord whitelists the wallet for trading._`;
+        body += `❌ ${trade.error}\n\n(Testnet trading needs the wallet whitelisted by the SoDEX team — this is the expected gate.)`;
       } else {
-        body += `🚀 Order submitted!\nSymbol ID: ${trade.symbolID}\nFunds: $${trade.funds}\nResponse:\n\`\`\`\n${JSON.stringify(trade.result, null, 2).slice(0, 600)}\n\`\`\``;
+        const resp = JSON.stringify(trade.result).slice(0, 500);
+        body += `🚀 Order submitted.\nSymbol ID: ${trade.symbolID}\nFunds: $${trade.funds}\nResponse: ${resp}`;
       }
-      await ctx.reply(body, { parse_mode: 'Markdown' });
+      await ctx.reply(body);
     } catch (err) {
       await ctx.reply(`💥 ${(err as Error).message}`);
     }

@@ -5,6 +5,7 @@ import {
   type SignalContribution,
   type SignalDirection,
   type SignalRequest,
+  type BasketAllocation,
 } from '@pod/signal-engine';
 
 export interface BubbleData {
@@ -21,6 +22,8 @@ export interface BubbleData {
   citation: string;
   /** Per-source breakdown — drives the drawer "Why this score" panel. */
   contributions: SignalContribution[];
+  /** Target basket allocation (risk-profile BALANCED) — used by the bot's /trade flow. */
+  targetBasket: BasketAllocation[];
   /** Approximate ETF AUM rank — drives bubble size. */
   rank: number;
   uncertain: boolean;
@@ -64,6 +67,11 @@ function fallbackBubble(t: { asset: EtfSymbol; name: string; rank: number }, rea
     reasoning: reason,
     citation: 'No live data',
     contributions: [],
+    targetBasket: [
+      { symbol: t.asset, weight: 0.25 },
+      { symbol: t.asset === 'BTC' ? 'ETH' : 'BTC', weight: 0.1 },
+      { symbol: 'USDC', weight: 0.65 },
+    ],
     rank: t.rank,
     uncertain: true,
     generatedAt: new Date().toISOString(),
@@ -107,11 +115,18 @@ async function fetchAllBubbleDataInner(): Promise<BubbleData[]> {
       reasoning: signal.reasoning,
       citation: citationFromReasoning(signal.reasoning),
       contributions: signal.contributions,
+      targetBasket: signal.targetBasket,
       rank: t.rank,
       uncertain: signal.uncertain,
       generatedAt: signal.generated_at,
     };
   });
+}
+
+/** Single-asset lookup against the same cached fan-out the web UI uses. */
+export async function getBubble(asset: EtfSymbol): Promise<BubbleData | undefined> {
+  const all = await fetchAllBubbleData();
+  return all.find((b) => b.asset === asset);
 }
 
 // 10-minute TTL on the SoSoValue fan-out so we don't slam free-tier limits.
