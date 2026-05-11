@@ -145,8 +145,22 @@ Reproducibility:
 - **SoSoValue free-tier rate limits** can cause individual sources to skip during the 10-asset fan-out. The drawer surfaces this honestly via the `Sources (N/5)` count.
 - **30-day score trace on `/asset/[symbol]` is indicative** until the daily cron has populated 30 days of history.
 - **Bot uses a custodial testnet keystore** for the Wave-1 demo. A non-custodial wallet flow is Wave-2.
-- **`PodScoreReceipt` contract is not yet deployed to ValueChain testnet.** The compiled contract + deploy script + funded deployer wallet are ready (`packages/pod-contracts/script/Deploy.s.sol`, address `0x85987DE711B660d2452AA80D4cBfb2b18981CaaB`), but the public SoDEX testnet faucet only drips USDC — no native gas token. Unblock = ask the SoDEX team to drip native gas to that address; deploy is one `forge script ... --broadcast` away after that.
 - **POD scores are research signals, not investment advice.** No backtest replaces real risk management.
+
+## On-chain receipts (live)
+
+POD contracts are **deployed on ValueChain testnet** (chain 138565):
+
+| Contract | Address | Tx |
+|---|---|---|
+| `ReasoningLogger` | `0x0723dc7D775864ec08797e84d2A5E068876B221B` | `0xf1af47cc601540bf42a173492cbfc7e8677a7911070a414137d7396b9d04e669` |
+| `DrawdownGuard` | `0xaB318f90a8EB8dce770f7B39D5F1175c07706B83` | `0xf76de924d1e52cf340dcd07802151df69cfa427cd9d779e6794217eb5d60c41b` |
+
+Deployer: `0x85987DE711B660d2452AA80D4cBfb2b18981CaaB`. Verify by hitting the ValueChain testnet RPC:
+```bash
+cast code 0x0723dc7D775864ec08797e84d2A5E068876B221B \
+  --rpc-url https://testnet-rpc.valuechain.xyz
+```
 
 ## What's next (Wave 2 candidates)
 
